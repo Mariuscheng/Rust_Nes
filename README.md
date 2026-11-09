@@ -93,6 +93,16 @@ cargo test --release -- --ignored
 `apu_test` 目前是**已知時序問題**，測試會驗證失敗內容，等 cycle-accurate 核心完成後
 改成 `assert_pass` 即可。
 
+`golden_frames.txt` 是畫面 hash 回歸（Mario / 1942 / 1943 / MMC3 測試 ROM）。若變更是
+有意的，重新生成：
+
+```bash
+# PowerShell
+$env:REGEN_GOLDEN=1; cargo test --release -- --ignored golden_frames
+# bash
+REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
+```
+
 ## 🏗️ 架構說明
 
 ### CPU (6502)

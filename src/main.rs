@@ -14,6 +14,8 @@ mod rom;
 mod timing;
 
 #[cfg(test)]
+mod frame_tests;
+#[cfg(test)]
 mod rom_tests;
 
 use audio::AudioOut;
