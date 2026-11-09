@@ -49,6 +49,7 @@ impl PPU {
                 self.status.sprite_overflow = false;
                 self.nmi_interrupt = false;
                 self.nmi_delay = 0;
+                self.vbl_clear_dot = self.abs_dot();
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
