@@ -216,6 +216,8 @@ CPU cycle，而且已排除下列所有變數：poll 取樣點、NMI 取消窗�
 offset** 傳給 CPU（目前是每 cycle 固定 3 dot 的取樣），這是本重構最後一塊、也是最
 大的一塊。
 
+**Round 24**：直接先做 D2（把 $2002 抑制規則從「同 tick」改成「距離 VBL set 的 dot 數」：delta -1/0 不出現旗標、delta 0/1 取消 NMI、delta >= 2 正常）。結果測項 6 仍通過、測項 7 仍卡同一列。原因是 **CPU 存取本身沒有 dot 位置**（bs_dot() 拿到的是該 cycle 跑完 3 dots 之後的值），delta 取不到測項要分辨的那一格。結論：D2 必須等 D1（存取帶 dot 位置／PPU 推進拆成存取前後兩段）才有意義。
+
 ## 9. 風險
 
 - **P1 會動到所有 opcode 的執行路徑**：任何一個 handler 少 tick 或多 tick，都會讓
