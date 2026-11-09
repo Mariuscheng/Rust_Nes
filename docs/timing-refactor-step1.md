@@ -78,6 +78,18 @@
   需要下一輪處理 reset 與 IRQ 的相對順序）。
 - golden、其他 ROM 測試不變。
 
+**1e 觀測（第三輪：IRQ / reset 相對順序掃描）**
+
+- 對 (IRQ step × odd jitter 偏移 × reset step × reset 是否套用第一段 +3 shift)
+  共 48 組做掃描，以 `apu_test` 的失敗點評分。
+- 現行設定（IRQ 29830、odd 偏移 -2、reset 套用 +3）→ test 6 的 sub-test #2。
+- 最佳替代（IRQ 29831、odd -1、reset 29833 不套 shift）→ test 6 的 sub-test #4，
+  只多前進一個 sub-test，但模型變成 IRQ 與 reset 相隔 2 cycles、單元測試也要重寫，
+  因此**暫不採用**，維持目前較乾淨的模型。
+- 剩下的 test 6 #4（`Flag last set too soon`）需要理解原始碼註解所述的
+  「flag 連續設定三次、間隔 29831 clocks」行為；目前沒有可靠模型，
+  建議先換到 `ppu_vbl_nmi` 的 `vbl_set_time`。
+
 ---
 
 ## 1. 現況
