@@ -305,6 +305,11 @@ impl PPU {
         }
     }
 
+    /// Absolute dot counter within the frame (diagnostics only).
+    pub fn abs_dot(&self) -> u32 {
+        self.scanline as u32 * 341 + self.cycle as u32
+    }
+
     pub fn internal_read(&self, addr: u16) -> u8 {
         let addr = addr & 0x3FFF;
         match addr {

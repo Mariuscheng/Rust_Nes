@@ -53,14 +53,12 @@ pub(crate) fn op_brk(
     crate::cpu::stack_flags::stack_push_u16(cpu, bus, current_pc.wrapping_add(2));
     crate::cpu::stack_flags::stack_push_u8(cpu, bus, cpu.p | 0x30);
 
-    // c6: the NMI line is sampled at the penultimate cycle.
-    cpu.set_nmi_line(bus.nmi_line());
-    let nmi_taken = cpu.poll_nmi();
+    // c6: NMI is sampled on the penultimate cycle. BRK selects the NMI vector
+    // when that poll sees a pending NMI; the frame it pushed keeps B=1.
+    let nmi_taken = bus.take_nmi_edge();
 
     cpu.p |= 0x04;
-    cpu.irq_inhibit_counter = 0;
-    cpu.irq_allow_counter = 0;
-    cpu.skip_irq = false;
+    cpu.poll_iflag = true;
 
     if nmi_taken {
         // NMI preempted BRK: the BRK frame (PC+2, B=1) stays, NMI vector is used.
@@ -85,9 +83,8 @@ pub(crate) fn op_rti(
     let _ = bus.read(current_pc.wrapping_add(1));
     let status = crate::cpu::stack_flags::stack_pop_u8(cpu, bus);
     cpu.p = (status & 0xEF) | 0x20;
-    // RTI restores I flag immediately — no CLI/PLP/SEI-style delay.
-    cpu.irq_inhibit_counter = 0;
-    cpu.irq_allow_counter = 0;
+    // RTI restores I three cycles before the poll, so the poll sees the new value.
+    cpu.poll_iflag = cpu.irq_disabled();
     let addr = crate::cpu::stack_flags::stack_pop_u16(cpu, bus);
     cpu.pc = addr;
 }
@@ -95,8 +92,10 @@ pub(crate) fn op_rti(
 // ===================== Branch Helper =====================
 
 /// Generic branch helper: returns extra cycles (0 if not taken, 1 if taken, +1 if page crossed)
-/// Sets cpu.skip_irq = true for taken non-page-crossing branches
-/// (6502 does not sample IRQ on the last cycle of such branches).
+///
+/// A taken branch without a page cross inserts its extra cycle *after* the
+/// cycle the CPU polls interrupts on, so the poll uses the line state from one
+/// cycle earlier (that is why a taken branch delays an IRQ by one instruction).
 pub(crate) fn op_branch(
     cpu: &mut CPU,
     bus: &mut dyn BusInterface,
@@ -115,8 +114,7 @@ pub(crate) fn op_branch(
     if page_crossed {
         cycles += 1;
     } else {
-        // Taken branch, no page-cross: skip IRQ on last cycle
-        cpu.skip_irq = true;
+        cpu.poll_delay = 1;
     }
 
     cycles

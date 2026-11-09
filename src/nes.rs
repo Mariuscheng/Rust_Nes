@@ -123,24 +123,26 @@ impl NesConsole {
         };
 
         // ── 3. Interrupt dispatch (NMI first: it is not maskable) ──
-        // The 6502 samples the interrupt lines on the penultimate cycle of an
-        // instruction; `*_before_tick` is exactly that state. After a DMA the
-        // CPU was halted, so the live line state is the relevant one.
-        let (nmi_sample, irq_sample) = if dma_ran {
-            (self.bus.nmi_line(), self.bus.irq_asserted())
+        // The 6502 polls the interrupt lines on the cycle before its last one
+        // (a taken branch without a page cross is one cycle earlier again,
+        // see `CPU::poll_delay`). After a DMA the CPU was halted, so the live
+        // line state is the relevant one.
+        let delay = self.cpu.poll_delay;
+        let irq_sample = if dma_ran {
+            self.bus.irq_asserted()
         } else {
-            (
-                self.bus.nmi_line_before_tick(),
-                self.bus.irq_asserted_before_tick(),
-            )
+            self.bus.irq_asserted_before_tick(delay)
         };
 
-        self.cpu.set_nmi_line(nmi_sample);
-        if self.cpu.poll_nmi() {
+        // NMI is edge-triggered: the bus latches the rising edge on the PPU's
+        // NMI line, and the poll consumes it. A $2002 read that clears the flag
+        // before the edge is sampled therefore cancels the NMI, which is what
+        // the suppression window in ppu_vbl_nmi tests.
+        if self.bus.take_nmi_edge() {
             let nc = self.cpu.nmi(&mut self.bus);
             total_cpu_cycles += nc;
             nmi_cycles_acc += nc;
-        } else if !self.cpu.skip_irq && irq_sample && self.cpu.irq_pending() {
+        } else if irq_sample && self.cpu.irq_pending() {
             self.cpu.irq(&mut self.bus);
             total_cpu_cycles += 7;
             irq_cycles_acc += 7;

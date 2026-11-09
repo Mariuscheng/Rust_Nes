@@ -37,14 +37,23 @@ pub trait BusInterface {
         false
     }
 
-    /// NMI line state just before the most recent tick, i.e. the state the
-    /// 6502 samples on the penultimate cycle of the current instruction.
-    fn nmi_line_before_tick(&self) -> bool {
+    /// Consume a latched NMI edge, if any. The NMI input is edge-sensitive, so
+    /// an edge seen by the CPU survives until the interrupt is serviced.
+    fn take_nmi_edge(&mut self) -> bool {
         false
     }
 
-    /// IRQ line state just before the most recent tick (same sampling point).
-    fn irq_asserted_before_tick(&self) -> bool {
+    /// NMI line state `delay` cycles before the most recent tick, i.e. the
+    /// state the 6502 samples on the polling cycle of the current instruction.
+    /// `delay == 0`: the penultimate-cycle sample used by almost every
+    /// instruction; `delay == 1`: taken branches, whose extra cycle comes
+    /// after the poll point.
+    fn nmi_line_before_tick(&self, _delay: u8) -> bool {
+        false
+    }
+
+    /// IRQ line state at the same sampling point.
+    fn irq_asserted_before_tick(&self, _delay: u8) -> bool {
         false
     }
 }
@@ -63,10 +72,23 @@ pub struct MainBus {
     open_bus_latch: u8,
     /// PPU NMI line state, refreshed by `tick()`.
     nmi_line: bool,
+    /// NMI line state at the previous cycle boundary (edge detection).
+    nmi_line_prev_sample: bool,
+    /// NMI edge latched by the CPU: a rising edge of the NMI line survives
+    /// until the next poll, even if the game clears $2002 in between.
+    nmi_edge_seen: bool,
+    /// Value of `nmi_edge_seen` at the previous cycle boundary. The 6502 polls
+    /// interrupts on the penultimate cycle, so an edge seen during the last
+    /// cycle of an instruction is only serviced after the next instruction.
+    nmi_edge_seen_prev: bool,
     /// NMI/IRQ line state sampled just before the most recent tick: this is
     /// the penultimate-cycle state the 6502 uses to decide about interrupts.
     nmi_before_tick: bool,
     irq_before_tick: bool,
+    /// Same, one cycle earlier: taken branches poll one cycle before their
+    /// last cycle (see `CPU::poll_delay`).
+    nmi_before_prev_tick: bool,
+    irq_before_prev_tick: bool,
     /// Pending $4014 OAM DMA page, serviced after the current instruction.
     dma_request: Option<u8>,
 }
@@ -91,8 +113,13 @@ impl MainBus {
             cpu_cycle_count: 0,
             open_bus_latch: 0,
             nmi_line: false,
+            nmi_line_prev_sample: false,
+            nmi_edge_seen: false,
+            nmi_edge_seen_prev: false,
             nmi_before_tick: false,
             irq_before_tick: false,
+            nmi_before_prev_tick: false,
+            irq_before_prev_tick: false,
             dma_request: None,
         }
     }
@@ -337,6 +364,16 @@ impl BusInterface for MainBus {
             0x2000..=0x3FFF => {
                 let reg = addr & 0x0007;
                 let val = self.ppu.cpu_read(reg);
+                if reg == 2 {
+                    // Reading $2002 clears the VBL flag. If the NMI edge was
+                    // seen in this very CPU cycle it has not been committed
+                    // yet, so the read cancels it; an edge that was already
+                    // visible at the previous boundary still fires.
+                    self.nmi_line = self.ppu.nmi_interrupt;
+                    if self.nmi_edge_seen && !self.nmi_edge_seen_prev {
+                        self.nmi_edge_seen = false;
+                    }
+                }
                 self.open_bus_latch = val;
                 val
             }
@@ -421,7 +458,10 @@ impl BusInterface for MainBus {
     }
 
     fn tick(&mut self) -> bool {
+        self.nmi_before_prev_tick = self.nmi_before_tick;
+        self.irq_before_prev_tick = self.irq_before_tick;
         self.nmi_before_tick = self.nmi_line;
+        self.nmi_edge_seen_prev = self.nmi_edge_seen;
         let irq = self.irq_asserted();
         self.irq_before_tick = irq;
         self.cpu_cycle_count += 1;
@@ -433,6 +473,12 @@ impl BusInterface for MainBus {
             self.tick_mapper_irq();
         }
         self.nmi_line = self.ppu.nmi_interrupt;
+        // The CPU's NMI input is edge-sensitive: latch the rising edge so a
+        // later $2002 read cannot swallow an NMI that has already been seen.
+        if self.nmi_line && !self.nmi_line_prev_sample {
+            self.nmi_edge_seen = true;
+        }
+        self.nmi_line_prev_sample = self.nmi_line;
         self.nmi_line
     }
 
@@ -453,16 +499,35 @@ impl BusInterface for MainBus {
         self.cpu_cycle_count
     }
 
+    fn take_nmi_edge(&mut self) -> bool {
+        let fired = self.nmi_edge_seen_prev;
+        if fired {
+            self.nmi_edge_seen = false;
+            self.nmi_edge_seen_prev = false;
+        }
+        fired
+    }
+
     fn nmi_line(&self) -> bool {
         self.nmi_line
     }
 
-    fn nmi_line_before_tick(&self) -> bool {
-        self.nmi_before_tick
+    /// NMI line state `delay` cycles before the most recent tick.
+    /// `delay == 0` is the penultimate-cycle sample.
+    fn nmi_line_before_tick(&self, delay: u8) -> bool {
+        if delay == 0 {
+            self.nmi_before_tick
+        } else {
+            self.nmi_before_prev_tick
+        }
     }
 
-    fn irq_asserted_before_tick(&self) -> bool {
-        self.irq_before_tick
+    fn irq_asserted_before_tick(&self, delay: u8) -> bool {
+        if delay == 0 {
+            self.irq_before_tick
+        } else {
+            self.irq_before_prev_tick
+        }
     }
 }
 

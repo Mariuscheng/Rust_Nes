@@ -141,8 +141,10 @@ fn cpu_interrupts_known_nmi_brk_failure() {
 
 #[test]
 #[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
-fn ppu_vbl_nmi_known_suppression_failure() {
-    assert_known_failure("ppu_vbl_nmi.nes", 6_000, "6 of 10");
+fn ppu_vbl_nmi_known_nmi_on_timing_failure() {
+    // Test 6 (suppression) passes since the NMI edge is latched in the bus and
+    // a same-cycle $2002 read cancels it; test 7 (nmi_on_timing) is next.
+    assert_known_failure("ppu_vbl_nmi.nes", 6_000, "7 of 10");
 }
 
 #[test]

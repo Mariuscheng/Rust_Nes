@@ -41,15 +41,9 @@ pub(crate) fn op_plp(
     _current_pc: u16,
 ) {
     let v = crate::cpu::stack_flags::stack_pop_u8(cpu, bus);
-    let old_i = cpu.irq_disabled();
     cpu.restore_from_stack(v);
-    let new_i = cpu.irq_disabled();
-    // If PLP clears I flag (1→0), delay IRQ blocking by 2 instructions (same as CLI)
-    if old_i && !new_i {
-        cpu.irq_inhibit_counter = 2;
-    }
-    // If PLP sets I flag (0→1), delay IRQ blocking by 2 instructions (same as SEI)
-    if !old_i && new_i {
-        cpu.irq_allow_counter = 2;
-    }
+    // The poll happens on the penultimate cycle, which is the same cycle the
+    // pulled byte is transferred to P — so it still sees the old I flag and
+    // the IRQ is delayed by one instruction, exactly like CLI/SEI.
+    // (`poll_iflag` was sampled at instruction start and is left alone.)
 }

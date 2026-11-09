@@ -30,20 +30,22 @@ pub struct CPU {
     pub pc: u16,
     pub sp: u8,
     pub p: u8,
-    /// IRQ inhibit counter for CLI/PLP delay (clears I flag).
-    /// Set to 2, decremented each step. IRQ blocked while counter > 0.
-    pub irq_inhibit_counter: u8,
-    /// IRQ allow counter for SEI/PLP delay (sets I flag).
-    /// Set to 2, decremented each step. IRQ allowed regardless of I while counter > 0.
-    pub irq_allow_counter: u8,
-    /// NMI edge-detection: previous state of the NMI line.
-    pub prev_nmi_line: bool,
-    /// NMI latched (edge detected). Consumed by poll_nmi() before each instruction.
-    pub nmi_latch: bool,
-    /// Skip IRQ polling after current instruction (taken branch, no page-cross).
-    pub skip_irq: bool,
+    /// I flag as visible to the interrupt poll at the end of the current
+    /// instruction. Initialised from the live flag at instruction start;
+    /// instructions that load status (PLP/RTI) or set I mid-sequence
+    /// (BRK/IRQ/NMI) update it, while CLI/SEI deliberately do not — their
+    /// write lands on the last cycle, so the poll still sees the old value
+    /// (that is the one-instruction IRQ delay after CLI).
+    pub poll_iflag: bool,
+    /// How many cycles before the last one the current instruction polls the
+    /// interrupt lines. 0 = last cycle (normal), 1 = taken branch without a
+    /// page cross, whose extra cycle is inserted after the poll point.
+    pub poll_delay: u8,
     /// Total CPU cycles consumed by the last instruction (set by step()).
     pub last_cycles: u16,
+    /// Diagnostic: opcodes that needed trailing padding (internal cycles not
+    /// yet placed at their hardware position). Remove with the padding itself.
+    pub padded: [bool; 256],
 }
 
 // ── Status flag constants ──
@@ -109,12 +111,10 @@ impl CPU {
             pc: 0,
             sp: 0xFD,
             p: 0x24,
-            irq_inhibit_counter: 0,
-            irq_allow_counter: 0,
-            prev_nmi_line: false,
-            nmi_latch: false,
-            skip_irq: false,
+            poll_iflag: true,
+            poll_delay: 0,
             last_cycles: 0,
+            padded: [false; 256],
         }
     }
 
@@ -124,46 +124,11 @@ impl CPU {
         self.pc = (hi << 8) | lo;
     }
 
-    // ── NMI line interface ──
-
-    /// Feed the NMI line state from PPU. Edge-triggered: 0→1 latches NMI.
-    pub fn set_nmi_line(&mut self, state: bool) {
-        if state && !self.prev_nmi_line {
-            self.nmi_latch = true;
-        }
-        self.prev_nmi_line = state;
-    }
-
-    /// Check and consume the NMI latch. Returns true if NMI should fire now.
-    pub fn poll_nmi(&mut self) -> bool {
-        if self.nmi_latch {
-            self.nmi_latch = false;
-            return true;
-        }
-        false
-    }
-
-    /// Check whether IRQ should be serviced (respects I flag and delay counters).
-    /// Does NOT check skip_irq — caller must check that separately.
+    /// Check whether the IRQ line should be serviced by the poll at the end of
+    /// the current instruction. Uses `poll_iflag`, i.e. the I flag as it was
+    /// visible on the polling cycle (see the field docs).
     pub fn irq_pending(&self) -> bool {
-        let i_set = (self.p & 0x04) != 0;
-        if i_set && self.irq_allow_counter > 0 {
-            return true; // SEI/PLP delay: allow IRQ despite I=1
-        }
-        if !i_set && self.irq_inhibit_counter > 0 {
-            return false; // CLI/PLP delay: block IRQ despite I=0
-        }
-        !i_set
-    }
-
-    /// Decrement interrupt delay counters (call after each instruction).
-    pub fn tick_counters(&mut self) {
-        if self.irq_inhibit_counter > 0 {
-            self.irq_inhibit_counter -= 1;
-        }
-        if self.irq_allow_counter > 0 {
-            self.irq_allow_counter -= 1;
-        }
+        !self.poll_iflag
     }
 
     /// Execute one CPU instruction. Returns consumed CPU cycles.
@@ -181,8 +146,11 @@ impl CPU {
         let next_pc = current_pc.wrapping_add(opcode.size as u16);
         self.pc = next_pc;
 
-        // Reset per-instruction flags
-        self.skip_irq = false;
+        // Reset per-instruction poll state. The I flag as sampled here is what
+        // the end-of-instruction poll sees; CLI/SEI deliberately leave it
+        // alone because their write lands on the last cycle.
+        self.poll_iflag = self.irq_disabled();
+        self.poll_delay = 0;
 
         let mut extra_cycles: u8 = 0;
         match opcode.op {
@@ -306,6 +274,12 @@ impl CPU {
         for _ in used..total_cycles {
             bus.tick();
         }
+        if used < total_cycles {
+            // Trailing padding: some internal cycle of this instruction is not
+            // yet placed at its hardware position (see the P1 phase in
+            // docs/cycle-exact-refactor.md).
+            self.padded[opcode_byte as usize] = true;
+        }
 
         // DMC DMA raised during the instruction (or while padding) stalls the
         // CPU for 4 cycles; pay those now. Anything raised while paying them is
@@ -322,8 +296,6 @@ impl CPU {
         // Decrement interrupt delay counters after instruction completes.
         // This is called here so that unit tests (which call step() directly)
         // also get correct counter behavior.
-        self.tick_counters();
-
         self.last_cycles = total_cycles;
         total_cycles
     }
@@ -345,26 +317,17 @@ impl CPU {
         self.pc = (hi << 8) | lo;
 
         self.p |= 0x04;
-        self.irq_inhibit_counter = 0;
-        self.irq_allow_counter = 0;
-        self.skip_irq = false;
+        self.poll_iflag = true;
+        self.poll_delay = 0;
 
         self.last_cycles = 7;
         7
     }
 
-    /// IRQ: maskable interrupt. Only taken if I flag allows and no inhibit delay.
-    /// Caller must check skip_irq before calling.
+    /// IRQ: maskable interrupt. The caller has already decided via
+    /// `irq_pending()` that the poll at the end of the current instruction
+    /// takes it.
     pub fn irq(&mut self, bus: &mut dyn BusInterface) {
-        let i_blocked = (self.p & 0x04) != 0;
-        if (i_blocked && self.irq_allow_counter == 0) || (!i_blocked && self.irq_inhibit_counter > 0) {
-            return;
-        }
-
-        // IRQ acknowledged: clear delay counters first.
-        self.irq_inhibit_counter = 0;
-        self.irq_allow_counter = 0;
-
         // c1-c2: internal cycles (dummy reads of the interrupted PC).
         let _ = bus.read(self.pc);
         let _ = bus.read(self.pc.wrapping_add(1));
@@ -376,6 +339,8 @@ impl CPU {
 
         // I flag is set once the status byte is on the stack.
         self.p |= 0x04;
+        self.poll_iflag = true;
+        self.poll_delay = 0;
 
         // c6-c7: fetch the IRQ vector.
         let lo = bus.read(IRQ_VECTOR_LO) as u16;

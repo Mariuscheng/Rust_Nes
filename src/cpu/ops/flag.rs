@@ -11,14 +11,10 @@ pub(crate) fn op_sei(
     _mode: AddressMode,
     _current_pc: u16,
 ) {
-    let old_i = cpu.irq_disabled();
+    // The I write lands on the last cycle, so the poll at the end of *this*
+    // instruction still sees the old value: a pending IRQ is taken right after
+    // SEI. `poll_iflag` was sampled at instruction start and is left alone.
     cpu.set_irq_disable(true);
-    // If I was 0→1, set the IRQ allow delay to 2: IRQ will still be
-    // allowed during SEI and the next instruction (6502 samples IRQ
-    // on the penultimate cycle, before the I flag write takes effect).
-    if !old_i {
-        cpu.irq_allow_counter = 2;
-    }
 }
 
 pub(crate) fn op_sec(
@@ -54,13 +50,9 @@ pub(crate) fn op_cli(
     _mode: AddressMode,
     _current_pc: u16,
 ) {
-    let old_i = cpu.irq_disabled();
+    // Same timing as SEI, other direction: the poll at the end of CLI still
+    // sees I=1, so a pending IRQ is serviced one instruction later.
     cpu.set_irq_disable(false);
-    // 6502: interrupt is not sampled until after the *next* instruction.
-    // Set counter to 2: blocks IRQ for this instruction and the next one.
-    if old_i {
-        cpu.irq_inhibit_counter = 2;
-    }
 }
 
 pub(crate) fn op_clv(

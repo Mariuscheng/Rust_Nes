@@ -13,6 +13,7 @@ savestate.dat
 
 # Local review artefacts (screenshots of test ROM output, etc.)
 /_shots/
+/_research/
 
 # Editor / tool backups
 *.ferrite-bak

@@ -19,15 +19,18 @@ impl PPU {
                 self.cycle = 1;
                 continue;
             }
-            // NMI delay
+            // NMI line trails the VBL flag by a couple of dots (see the set
+            // below). A $2002 read cancels the pending delay.
             if self.nmi_delay > 0 {
                 self.nmi_delay -= 1;
-                if self.nmi_delay == 0 && self.ctrl.nmi_output {
+                if self.nmi_delay == 0 && self.ctrl.nmi_output && self.status.vblank {
                     self.nmi_interrupt = true;
                 }
             }
 
-            // VBlank set at scanline 241, cycle 1
+            // VBlank set at scanline 241, cycle 1, NMI line asserted at the
+            // same time. A $2002 read in the same CPU cycle cancels the edge
+            // before the CPU commits it (ppu_vbl_nmi 06-suppression).
             if self.scanline == 241 && self.cycle == 1 {
                 self.status.vblank = true;
                 self.vblank_just_set = true;

@@ -1,7 +1,10 @@
 //! src/timing.rs
-//! Unit tests for interrupt timing logic.
+//! Unit tests for the interrupt-poll model.
 //!
-//! NOTE: Most timing coordination has been moved into nes.rs and cpu::core.rs.
+//! The 6502 polls the interrupt lines during the last cycle of an instruction.
+//! The I flag only takes effect for that poll if it was written *before* the
+//! polling cycle, which is why CLI/SEI delay an IRQ by one instruction while
+//! PLP/RTI/BRK do not. `CPU::poll_iflag` carries exactly that value.
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -52,210 +55,182 @@ mod tests {
         }
     }
 
-    /// After SEI (I=1 with no allow counter), IRQ is blocked.
-    #[test]
-    fn sei_blocks_irq_when_no_allow_counter() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // I=1, no allow counter (simulating SEI where I was already 1, or counter expired)
-        cpu.set_irq_disable(true);
-        cpu.irq_allow_counter = 0;
-
-        cpu.irq(&mut bus);
-
-        assert_eq!(cpu.pc, 0, "I=1 without allow counter should block IRQ");
-    }
-
-    /// During SEI execution (I transitions 0→1 with allow counter=2),
-    /// IRQ is allowed through — matching 6502 behavior where IRQ is
-    /// sampled on the penultimate cycle (before SEI sets I on the last cycle).
-    #[test]
-    fn sei_allow_counter_allows_irq_during_sei() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // Simulate SEI: transition I from 0→1, set allow counter to 2
-        cpu.set_irq_disable(false);
-        cpu.set_irq_disable(true); // SEI effect
-        cpu.irq_allow_counter = 2;
-
-        // Set up IRQ vector
-        bus.mem[0xFFFE] = 0xCD;
-        bus.mem[0xFFFF] = 0xAB;
-
-        // IRQ should be taken despite I=1 because allow counter > 0
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0xABCD, "SEI allow counter should allow IRQ during SEI");
-
-        // Allow counter decrements after instruction → now at 1
-        // Set PC back, call irq() again — still allowed
-        cpu.set_irq_disable(true); // reset I after IRQ cleared it
-        cpu.pc = 0x2000;
-        cpu.irq_allow_counter = 0; // simulate counter expired
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0x2000, "IRQ blocked after allow counter expired");
-    }
-
-    /// CLI followed by SEI: only one IRQ is allowed (right after SEI),
-    /// matching test 5 of the CLI latency test suite.
-    #[test]
-    fn cli_sei_allows_only_one_irq_after_sei() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // Simulate CLI: I→0, inhibit=2
-        cpu.set_irq_disable(false);
-        cpu.irq_inhibit_counter = 2;
-        // Simulate SEI immediately after: I→1, allow=2
-        cpu.set_irq_disable(true);
-        cpu.irq_allow_counter = 2;
-
-        bus.mem[0xFFFE] = 0xCD;
-        bus.mem[0xFFFF] = 0xAB;
-
-        // First IRQ: allowed (I=1 but allow counter > 0)
-        cpu.pc = 0x1000;
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0xABCD, "CLI+SEI: first IRQ allowed via allow counter");
-
-        // After IRQ taken, both counters cleared by irq()
-        // Second IRQ: blocked (I=1, allow=0)
-        cpu.set_irq_disable(true);
-        cpu.pc = 0x2000;
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0x2000, "CLI+SEI: only one IRQ allowed");
-    }
-
-    /// IRQ blocked when I=1 and allow counter is 0 (SEI/PLP delay expired).
-    #[test]
-    fn sei_no_allow_counter_when_i_stays_set() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // I already 1, simulate SEI (no transition)
-        cpu.set_irq_disable(true);
-        cpu.irq_allow_counter = 0; // op_sei would not set allow counter because old_i != 0
-
-        bus.mem[0xFFFE] = 0xCD;
-        bus.mem[0xFFFF] = 0xAB;
-        cpu.pc = 0x1000;
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0x1000, "IRQ blocked: I=1 and allow counter=0");
+    /// Step a program laid out at `addr`; returns the cycles consumed.
+    fn step_at(cpu: &mut CPU, bus: &mut DummyBus, addr: u16, opcode: u8) -> u16 {
+        bus.mem[addr as usize] = opcode;
+        cpu.pc = addr;
+        cpu.step(bus)
     }
 
     #[test]
-    fn cli_delays_irq_by_two_instructions() {
+    fn sei_poll_still_sees_cleared_i() {
         let mut cpu = CPU::new();
         let mut bus = DummyBus::new();
 
-        // Start with I=1 (interrupts disabled)
-        cpu.set_irq_disable(true);
+        cpu.set_irq_disable(false); // I=0 before SEI
+        step_at(&mut cpu, &mut bus, 0x0000, 0x78); // SEI
 
-        // Simulate CLI: clear I flag and set inhibit counter to 2
-        cpu.set_irq_disable(false);
-        cpu.irq_inhibit_counter = 2;
+        assert!(cpu.irq_disabled(), "SEI sets I");
+        assert!(cpu.irq_pending(), "poll at the end of SEI still sees I=0");
+    }
 
-        // First instruction after CLI: IRQ blocked (counter=2 → check passes)
-        assert!(cpu.irq_inhibit_counter > 0, "Counter should be 2");
-        // irq() should be blocked
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0, "IRQ blocked on instruction after CLI (counter=2)");
-        cpu.irq_inhibit_counter -= 1; // first instruction ends
+    #[test]
+    fn cli_poll_still_sees_set_i() {
+        let mut cpu = CPU::new();
+        let mut bus = DummyBus::new();
 
-        // Second instruction after CLI: IRQ blocked (counter=1 → check passes)
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0, "IRQ blocked on 2nd instruction after CLI (counter=1)");
-        cpu.irq_inhibit_counter -= 1; // second instruction ends
+        cpu.set_irq_disable(true); // I=1 before CLI
+        step_at(&mut cpu, &mut bus, 0x0000, 0x58); // CLI
 
-        // Third instruction after CLI: IRQ allowed (counter=0)
-        // Set up IRQ vector so it doesn't crash
+        assert!(!cpu.irq_disabled(), "CLI clears I");
+        assert!(
+            !cpu.irq_pending(),
+            "poll at the end of CLI still sees I=1, delaying IRQ by one instruction"
+        );
+    }
+
+    #[test]
+    fn irq_is_taken_after_the_instruction_following_cli() {
+        let mut cpu = CPU::new();
+        let mut bus = DummyBus::new();
+
+        // CLI at $1000, then NOPs. IRQ vector points at $8000.
+        bus.mem[0x1000] = 0x58; // CLI
+        bus.mem[0x1001] = 0xEA; // NOP
         bus.mem[0xFFFE] = 0x00;
         bus.mem[0xFFFF] = 0x80;
-        cpu.irq(&mut bus);
-        // IRQ should have been taken → PC should be 0x8000
-        assert_eq!(cpu.pc, 0x8000, "IRQ taken on 3rd instruction after CLI (counter=0)");
-        // I flag should be set after IRQ
-        assert!(cpu.irq_disabled(), "I flag set after IRQ");
-    }
-
-    #[test]
-    fn irq_not_taken_when_i_flag_set() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // Set I flag
+        cpu.pc = 0x1000;
         cpu.set_irq_disable(true);
-        cpu.pc = 0x1234;
 
-        cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0x1234, "IRQ not taken when I=1");
+        cpu.step(&mut bus); // CLI
+        assert!(!cpu.irq_pending(), "no IRQ at the end of CLI");
+
+        cpu.step(&mut bus); // NOP
+        assert!(cpu.irq_pending(), "IRQ polled at the end of the next instruction");
     }
 
     #[test]
-    fn irq_taken_when_i_flag_clear() {
+    fn plp_poll_still_sees_the_old_i_flag() {
         let mut cpu = CPU::new();
         let mut bus = DummyBus::new();
 
-        // Clear I flag
+        // Stack: [P with I clear] at $01FF.
+        cpu.set_irq_disable(true);
+        bus.mem[0x01FF] = 0x20; // I clear, bit5 set
+        cpu.sp = 0xFE;
+        step_at(&mut cpu, &mut bus, 0x0000, 0x28); // PLP
+
+        assert!(!cpu.irq_disabled(), "PLP restored I=0");
+        assert!(
+            !cpu.irq_pending(),
+            "PLP loads P on the polling cycle, so this poll still sees I=1"
+        );
+    }
+
+    #[test]
+    fn brk_poll_sees_i_set_by_the_sequence() {
+        let mut cpu = CPU::new();
+        let mut bus = DummyBus::new();
+
+        cpu.set_irq_disable(false);
+        bus.mem[0xFFFE] = 0x00;
+        bus.mem[0xFFFF] = 0x80;
+        step_at(&mut cpu, &mut bus, 0x1000, 0x00); // BRK
+
+        assert_eq!(cpu.pc, 0x8000, "BRK vectors through IRQ/BRK");
+        assert!(
+            !cpu.irq_pending(),
+            "I is set during BRK, so its own poll cannot take an IRQ"
+        );
+    }
+
+    #[test]
+    fn taken_branch_polls_one_cycle_early() {
+        let mut cpu = CPU::new();
+        let mut bus = DummyBus::new();
+
+        // $1000: BNE +0 (taken without page cross) — Z clear.
+        bus.mem[0x1000] = 0xD0;
+        bus.mem[0x1001] = 0x00;
+        cpu.pc = 0x1000;
+        cpu.p = 0x24;
+        cpu.step(&mut bus);
+
+        assert_eq!(cpu.poll_delay, 1, "taken branch moves the poll one cycle earlier");
+
+        // Same branch, but crossing a page: the extra cycle precedes the poll.
+        let mut bus2 = DummyBus::new();
+        bus2.mem[0x10F0] = 0xD0;
+        bus2.mem[0x10F1] = 0x20; // target $1112 — crosses $1100 page boundary
+        cpu.p = 0x24;
+        cpu.pc = 0x10F0;
+        cpu.step(&mut bus2);
+        assert_eq!(cpu.poll_delay, 0, "page-crossing branch polls on its last cycle");
+    }
+
+    #[test]
+    fn irq_sequence_sets_i_and_vectors() {
+        let mut cpu = CPU::new();
+        let mut bus = DummyBus::new();
+
         cpu.set_irq_disable(false);
         cpu.pc = 0x1234;
-
-        // Set up valid IRQ vector
         bus.mem[0xFFFE] = 0xCD;
         bus.mem[0xFFFF] = 0xAB;
 
         cpu.irq(&mut bus);
-        assert_eq!(cpu.pc, 0xABCD, "IRQ taken when I=0");
+        assert_eq!(cpu.pc, 0xABCD, "IRQ vectors through $FFFE");
         assert!(cpu.irq_disabled(), "I flag set after IRQ");
+        assert!(!cpu.irq_pending(), "I is set before the next poll");
     }
 
     #[test]
-    fn nmi_sets_i_flag_and_clears_inhibit_counter() {
+    fn irq_pending_follows_poll_iflag_not_live_flag() {
         let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // Simulate that there was a pending inhibit (CLI delay)
-        cpu.irq_inhibit_counter = 2;
-        cpu.set_irq_disable(false); // I=0
-
-        // Set up NMI vector
-        bus.mem[0xFFFA] = 0x34;
-        bus.mem[0xFFFB] = 0x12;
-
-        cpu.nmi(&mut bus);
-        assert_eq!(cpu.pc, 0x1234, "NMI jumps to vector");
-        assert!(cpu.irq_disabled(), "I flag set after NMI");
-        assert_eq!(cpu.irq_inhibit_counter, 0, "Inhibit counter cleared by NMI");
-    }
-
-    #[test]
-    fn irq_inhibit_counter_persists_across_step() {
-        let mut cpu = CPU::new();
-        let mut bus = DummyBus::new();
-
-        // Simulate CLI: set counter to 2
         cpu.set_irq_disable(false);
-        cpu.irq_inhibit_counter = 2;
+        cpu.poll_iflag = true;
+        assert!(
+            !cpu.irq_pending(),
+            "the poll uses the sampled I flag, not the live one"
+        );
+    }
 
-        // Set up NOPs at consecutive addresses so step() doesn't hit BRK (0x00).
-        bus.mem[0x0000] = 0xEA; // NOP (implied, size=1)
-        bus.mem[0x0001] = 0xEA; // NOP (implied, size=1)
-        bus.mem[0x0002] = 0xEA; // NOP (implied, size=1)
-        bus.mem[0xFFFE] = 0x00;
-        bus.mem[0xFFFF] = 0x80;
-
-        // First step: counter decrements from 2→1
-        let _ = cpu.step(&mut bus);
-        assert_eq!(cpu.irq_inhibit_counter, 1, "Counter decremented after step 1");
-
-        // Second step: counter decrements from 1→0
-        let _ = cpu.step(&mut bus);
-        assert_eq!(cpu.irq_inhibit_counter, 0, "Counter decremented from 1 to 0 after step 2");
-
-        // Third step: counter stays 0
-        let _ = cpu.step(&mut bus);
-        assert_eq!(cpu.irq_inhibit_counter, 0, "Counter stays 0 after step 3");
+    /// Diagnostic: run every opcode once and list those whose internal cycles
+    /// are still trailing padding (i.e. not placed at their hardware cycle).
+    ///
+    /// `cargo test -- --ignored report_trailing_padding --nocapture`
+    #[test]
+    #[ignore]
+    fn report_trailing_padding() {
+        let mut report: Vec<(u8, u16, u16)> = Vec::new();
+        for opcode in 0u16..=0xFF {
+            let mut cpu = CPU::new();
+            let mut bus = DummyBus::new();
+            bus.mem[0] = opcode as u8;
+            bus.mem[1] = 0x02;
+            bus.mem[2] = 0x00;
+            cpu.pc = 0;
+            cpu.p = 0x24;
+            let _ = cpu.step(&mut bus);
+            let not_taken = cpu.padded[opcode as usize];
+            let mut cpu2 = CPU::new();
+            let mut bus2 = DummyBus::new();
+            bus2.mem[0] = opcode as u8;
+            bus2.mem[1] = 0x02;
+            bus2.mem[2] = 0x00;
+            cpu2.pc = 0;
+            cpu2.p = 0x27; // C, Z, I set
+            let _ = cpu2.step(&mut bus2);
+            let taken = cpu2.padded[opcode as usize];
+            if not_taken || taken {
+                report.push((opcode as u8, cpu.last_cycles, cpu2.last_cycles));
+            }
+        }
+        eprintln!("--- {} opcodes use trailing padding ---", report.len());
+        let mut line = String::new();
+        for (op, a, b) in &report {
+            line.push_str(&format!("{op:02X}({a}/{b}) "));
+        }
+        eprintln!("{line}");
     }
 }
-
