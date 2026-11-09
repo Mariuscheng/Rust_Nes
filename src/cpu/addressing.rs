@@ -39,7 +39,10 @@ pub(crate) fn read_operand_rmw(
 ) -> u8 {
     if let Some(dummy) = res.dummy_addr {
         bus.read(dummy);
-    } else if matches!(mode, AddressMode::AbsoluteX | AddressMode::AbsoluteY) {
+    } else if matches!(
+        mode,
+        AddressMode::AbsoluteX | AddressMode::AbsoluteY | AddressMode::IndirectY
+    ) {
         bus.read(res.addr);
     }
     bus.read(res.addr)
