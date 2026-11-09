@@ -143,11 +143,32 @@ REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
 
 CHR 同步的設計取捨與量測見 [`docs/chr-banking.md`](docs/chr-banking.md)。
 
+## ⚠️ 已知限制
+
+以下 blargg 測項目前**不會通過**，且不影響目前測試過的所有遊戲（Mario、Kirby's
+Adventure、1942、1943 的畫面 golden 全部一致）：
+
+| ROM | 結果 | 差距 |
+|-----|------|------|
+| `ppu_vbl_nmi` | 6/10（卡測項 7 `nmi_on_timing`） | `$2000` 開啟 NMI 的時機與硬體差 **1 個 PPU dot**：硬體要求 enable 距 VBL set 至少 25 dots，我們允許到 24 |
+| `cpu_interrupts` | 1/5（卡測項 2 `nmi_and_brk`） | 最後一列差 1 個 CPU cycle（NMI 早了） |
+| `3-nmi_and_irq` | 失敗 | NMI/IRQ 同拍時的優先權差 1–2 cycles |
+| `apu_test` | 6/8（卡測項 7，DMC timing） | — |
+
+成因與已排除的變體（六個 PPU 側相位調整全部無效或破壞已通過的測項）整理在
+[`docs/c0-phase-notes.md`](docs/c0-phase-notes.md)。要繼續推進需要把 CPU 改成
+cycle-stepped（每 cycle 一個 state、存取有自己的 dot 位置），計畫見
+[`docs/cycle-stepped-cpu.md`](docs/cycle-stepped-cpu.md)。
+
 ## 📚 設計文件
 
 - [`docs/chr-banking.md`](docs/chr-banking.md) — CHR bank 切換：refresh-on-write 與 dirty block 最佳化
 - [`docs/timing-refactor-step1.md`](docs/timing-refactor-step1.md) — per-access ticking 重構進度
 - [`docs/nmi-timing-design.md`](docs/nmi-timing-design.md) — NMI 取樣／延遲的設計與實驗
+- [`docs/cycle-exact-refactor.md`](docs/cycle-exact-refactor.md) — P1–P4 的進度與量測
+- [`docs/c0-phase-notes.md`](docs/c0-phase-notes.md) — 剩餘三個測項的相位分析與排除清單
+- [`docs/cycle-stepped-cpu.md`](docs/cycle-stepped-cpu.md) — cycle-stepped CPU 重構計畫（C0–C4）
+- [`docs/dot-offset-events.md`](docs/dot-offset-events.md) — dot-offset 事件模型（D1–D5）
 
 ## 📝 License
 
