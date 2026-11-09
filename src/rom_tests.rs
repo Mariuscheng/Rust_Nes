@@ -135,6 +135,14 @@ fn instr_timing_passes() {
 
 #[test]
 #[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
+fn cpu_dummy_writes_oam_passes() {
+    // RMW instructions write the old value before the new one; the unofficial
+    // RMW opcodes used to skip that write, which this ROM catches.
+    assert_pass("cpu_dummy_writes_oam.nes", 6_000);
+}
+
+#[test]
+#[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
 fn cpu_interrupts_known_nmi_brk_failure() {
     assert_known_failure("cpu_interrupts.nes", 6_000, "2 of 5");
 }

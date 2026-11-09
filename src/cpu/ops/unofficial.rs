@@ -15,9 +15,12 @@ pub(crate) fn op_slo(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     let mut value = read_operand(bus, &res);
+    let original = value;
     // ASL
     cpu.set_carry((value & 0x80) != 0);
     value <<= 1;
+    // RMW: the old value is written back first (dummy write), then the result.
+    bus.write(res.addr, original);
     bus.write(res.addr, value);
     // ORA
     cpu.a |= value;
@@ -35,10 +38,12 @@ pub(crate) fn op_rla(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     let mut value = read_operand(bus, &res);
+    let original = value;
     let old_carry = cpu.carry();
     // ROL
     cpu.set_carry((value & 0x80) != 0);
     value = (value << 1) | (if old_carry { 1 } else { 0 });
+    bus.write(res.addr, original);
     bus.write(res.addr, value);
     // AND
     cpu.a &= value;
@@ -56,9 +61,11 @@ pub(crate) fn op_sre(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     let mut value = read_operand(bus, &res);
+    let original = value;
     // LSR
     cpu.set_carry((value & 0x01) != 0);
     value >>= 1;
+    bus.write(res.addr, original);
     bus.write(res.addr, value);
     // EOR
     cpu.a ^= value;
@@ -76,6 +83,7 @@ pub(crate) fn op_rra(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     let mut value = read_operand(bus, &res);
+    let original = value;
     let old_carry = cpu.carry();
     // ROR
     let new_carry = (value & 0x01) != 0;
@@ -84,6 +92,7 @@ pub(crate) fn op_rra(
         value |= 0x80;
     }
     cpu.set_carry(new_carry);
+    bus.write(res.addr, original);
     bus.write(res.addr, value);
     // ADC
     let carry_in = if cpu.carry() { 1u16 } else { 0u16 };
@@ -139,7 +148,9 @@ pub(crate) fn op_dcp(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     // DEC memory
-    let dec_value = read_operand(bus, &res).wrapping_sub(1);
+    let original = read_operand(bus, &res);
+    let dec_value = original.wrapping_sub(1);
+    bus.write(res.addr, original);
     bus.write(res.addr, dec_value);
     // CMP A vs dec_value
     cpu.set_carry(cpu.a >= dec_value);
@@ -160,7 +171,9 @@ pub(crate) fn op_isc(
     let addr = res.addr;
 
     // INC memory
-    let new_m = read_operand(bus, &res).wrapping_add(1);
+    let original = read_operand(bus, &res);
+    let new_m = original.wrapping_add(1);
+    bus.write(addr, original);
     bus.write(addr, new_m);
 
     // SBC with m = new_m
