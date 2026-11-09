@@ -1,6 +1,6 @@
 # Step 1：把「時間」收斂成單一時鐘（per-access ticking）
 
-> 狀態：**1a–1c 已完成**（見 §0 進度），1d–1e 待做。
+> 狀態：**1a–1d 已完成**（見 §0 進度），1e 待做。
 > 目標：讓每一次 CPU 匯流排存取都推進 1 個 CPU cycle（3 PPU dots + 1 APU cycle），
 > 取代現在「整條指令跑完再補 tick」的模型。
 > 這一階段**不做**完整 cycle-stepped CPU state machine；它先消除「暫存器存取相位」
@@ -14,8 +14,8 @@
 |---|---|---|
 | **1a** | ✅ `a61257e` | `MainBus` 去 `RefCell`、`read`/`write` 改 `&mut`、新增 `tick()`。行為不變：golden 10/10 一致。 |
 | **1b** | ✅ `9f6fd30` | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
-| **1c** | ✅ 本次 | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
-| 1d | ⬜ | DMA 移到指令後執行 |
+| **1c** | ✅ `dbe5d19` | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
+| **1d** | ✅ 本次 | `$4014` 只排入請求，指令結束後由 `run_dma()` 執行：CPU 停住 513/514 cycles（奇偶對齊），每 2 cycles 搬一個 OAM byte，期間 PPU/APU 照常推進。 |
 | 1e | ⬜ | 中斷取樣精確化（移除 `skip_irq` 等近似） |
 
 **1b 觀測**
@@ -36,6 +36,16 @@
   (a) 有非靜音樣本、(b) 樣本數 = 400 幀 × 735（誤差 2% 內）→ 證明 APU 正好每個 CPU
   cycle 被推進一次，沒有重複或漏 tick。
 - 效能：Mario headless 2.17 ms/frame。
+
+**1d 觀測**
+
+- `$4014` 現在只記錄請求；`NesConsole::step` 在指令結束後、中斷派發前執行 `run_dma()`，
+  因此 DMA 期間的 NMI/IRQ 會延後到下一個指令邊界（符合硬體行為）。
+- 奇偶對齊在 DMA 真正開始時計算（`cpu_cycle_count & 1`），不是寫入當下。
+- golden 完全不變（DMA 在 vblank 內完成，OAM 內容相同）；ROM 套件結果不變。
+- 新增單元測試 `oam_dma_is_queued_then_transfers_page`：驗證寫入只排隊、513/514 cycles、
+  每 byte 正確搬移。
+- 效能：2.16 ms/frame。
 
 ---
 

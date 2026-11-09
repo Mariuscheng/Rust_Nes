@@ -45,13 +45,15 @@ pub struct MainBus {
     joypad1: Joypad,
     joypad2: Joypad,
     apu: APU,
-    dma_stolen_cycles: u16,
+    dmc_stolen_cycles: u16,
     /// Accumulated CPU cycles (DMA parity, future scheduling).
     cpu_cycle_count: u64,
     /// CPU open bus latch: the last value driven on the CPU data bus.
     open_bus_latch: u8,
     /// PPU NMI line state, refreshed by `tick()`.
     nmi_line: bool,
+    /// Pending $4014 OAM DMA page, serviced after the current instruction.
+    dma_request: Option<u8>,
 }
 
 impl MainBus {
@@ -70,10 +72,11 @@ impl MainBus {
             joypad1,
             joypad2,
             apu,
-            dma_stolen_cycles: 0,
+            dmc_stolen_cycles: 0,
             cpu_cycle_count: 0,
             open_bus_latch: 0,
             nmi_line: false,
+            dma_request: None,
         }
     }
 
@@ -105,12 +108,12 @@ impl MainBus {
     ///
     /// The DMC never reads memory itself: it exposes an address and the bus
     /// fetches the byte. Each fetched byte stalls the CPU for 4 cycles, which
-    /// is accumulated in `dma_stolen_cycles` and paid by `CPU::step`.
+    /// is accumulated in `dmc_stolen_cycles` and paid by `CPU::step`.
     fn clock_apu(&mut self) {
         if let Some(addr) = self.apu.tick_one() {
             let byte = self.peek(addr);
             self.apu.fill_sample(byte);
-            self.dma_stolen_cycles = self.dma_stolen_cycles.saturating_add(4);
+            self.dmc_stolen_cycles = self.dmc_stolen_cycles.saturating_add(4);
         }
     }
 
@@ -126,6 +129,40 @@ impl MainBus {
     /// Drain accumulated audio samples.
     pub fn drain_audio(&mut self) -> Vec<f32> {
         self.apu.drain_audio_buffer()
+    }
+
+    // ══════════════════════════════════════════════
+    // OAM DMA ($4014)
+    // ══════════════════════════════════════════════
+
+    /// Take the pending $4014 OAM DMA request (page number), if any.
+    pub fn take_dma_request(&mut self) -> Option<u8> {
+        self.dma_request.take()
+    }
+
+    /// Run an OAM DMA transfer, halting the CPU.
+    ///
+    /// Takes 513 cycles, or 514 when the request lands on an odd CPU cycle.
+    /// One byte is transferred every two cycles (read + write), like the real
+    /// $2004 DMA. Returns the number of CPU cycles consumed.
+    pub fn run_dma(&mut self, page: u8) -> u16 {
+        let base = (page as u16) << 8;
+        let extra = (self.cpu_cycle_count & 1) as u16;
+
+        // Halt/alignment cycles before the first byte.
+        self.tick();
+        if extra == 1 {
+            self.tick();
+        }
+
+        for i in 0..256u16 {
+            self.tick(); // read cycle
+            let val = self.peek(base.wrapping_add(i));
+            self.tick(); // write cycle
+            self.ppu.oam[i as usize] = val;
+        }
+
+        513 + extra
     }
 
     // ══════════════════════════════════════════════
@@ -318,23 +355,9 @@ impl BusInterface for MainBus {
                 self.ppu.cpu_write(reg, data);
             }
             0x4014 => {
-                // OAM DMA
-                let base = (data as u16) << 8;
-                let mut oam_data = [0u8; 256];
-                for i in 0..256u16 {
-                    let addr = base.wrapping_add(i);
-                    let val = match addr {
-                        0x0000..=0x1FFF => self.ram.read(addr),
-                        0x6000..=0xFFFF => self.mapper.read_prg(addr),
-                        _ => self.open_bus_latch,
-                    };
-                    oam_data[i as usize] = val;
-                }
-                // DMA takes 513 or 514 CPU cycles (even/odd cycle alignment).
-                // The parity is determined by the CPU cycle count before DMA starts.
-                let dma_cycles = if self.cpu_cycle_count & 1 == 0 { 513 } else { 514 };
-                self.dma_stolen_cycles += dma_cycles;
-                self.ppu.oam.copy_from_slice(&oam_data);
+                // OAM DMA: the transfer itself runs after this instruction
+                // (see `run_dma`), halting the CPU for 513/514 cycles.
+                self.dma_request = Some(data);
             }
             0x4000..=0x4013 => {
                 let _ = self.apu.write_register(addr, data);
@@ -388,8 +411,8 @@ impl BusInterface for MainBus {
     }
 
     fn take_immediate_stolen_cycles(&mut self) -> u16 {
-        let dma = self.dma_stolen_cycles;
-        self.dma_stolen_cycles = 0;
+        let dma = self.dmc_stolen_cycles;
+        self.dmc_stolen_cycles = 0;
         dma
     }
 
@@ -399,5 +422,47 @@ impl BusInterface for MainBus {
 
     fn nmi_line(&self) -> bool {
         self.nmi_line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rom::Mirroring;
+    use crate::rom::mappers::Mapper0;
+
+    fn test_bus() -> MainBus {
+        let mapper = MapperVariant::Mapper0(Mapper0::new(vec![0u8; 16 * 1024], vec![0u8; 8 * 1024]));
+        MainBus::new(
+            mapper,
+            Ram::new(),
+            PPU::new(Mirroring::HORIZONTAL),
+            Joypad::new(),
+            Joypad::new(),
+            APU::new(44_100),
+        )
+    }
+
+    #[test]
+    fn oam_dma_is_queued_then_transfers_page() {
+        let mut bus = test_bus();
+
+        for i in 0..256u16 {
+            bus.write(0x0200 + i, i as u8);
+        }
+
+        // Writing $4014 only queues the transfer; the CPU keeps running.
+        bus.write(0x4014, 0x02);
+        assert_eq!(bus.take_dma_request(), Some(0x02));
+        assert!(bus.ppu.oam.iter().all(|&b| b == 0));
+
+        // Servicing it halts the CPU for 513/514 cycles and copies OAM.
+        let before = bus.cpu_cycles();
+        let cycles = bus.run_dma(0x02);
+        assert!(cycles == 513 || cycles == 514, "unexpected DMA length {cycles}");
+        assert_eq!(bus.cpu_cycles() - before, cycles as u64);
+        for i in 0..256usize {
+            assert_eq!(bus.ppu.oam[i], i as u8, "OAM byte {i}");
+        }
     }
 }

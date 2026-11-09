@@ -112,7 +112,15 @@ impl NesConsole {
         total_cpu_cycles += ic;
         instr_cycles += ic;
 
-        // ── 2. Interrupt dispatch (NMI first: it is not maskable) ──
+        // ── 2. OAM DMA requested by $4014 runs right after the instruction.
+        //       The CPU is halted for 513/514 cycles while PPU and APU keep
+        //       advancing, so NMI/IRQ raised during the transfer are seen at
+        //       the next instruction boundary. ──
+        if let Some(page) = self.bus.take_dma_request() {
+            total_cpu_cycles += self.bus.run_dma(page);
+        }
+
+        // ── 3. Interrupt dispatch (NMI first: it is not maskable) ──
         self.cpu.set_nmi_line(self.bus.nmi_line());
         if self.cpu.poll_nmi() {
             let nc = self.cpu.nmi(&mut self.bus);
