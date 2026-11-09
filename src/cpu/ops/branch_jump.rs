@@ -102,10 +102,13 @@ pub(crate) fn op_branch(
     current_pc: u16,
     condition: bool,
 ) -> u8 {
+    // The operand byte is fetched on the second cycle whether or not the
+    // branch is taken; skipping that read would leave the CPU a cycle short
+    // and shift every later access.
+    let offset = bus.read(current_pc.wrapping_add(1)) as i8;
     if !condition {
         return 0; // pc already advanced by size in step()
     }
-    let offset = bus.read(current_pc.wrapping_add(1)) as i8;
     let next_pc = current_pc.wrapping_add(2);
     cpu.pc = (next_pc as i32 + offset as i32) as u16; // override pc
 
