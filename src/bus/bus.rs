@@ -81,6 +81,10 @@ pub struct MainBus {
     /// interrupts on the penultimate cycle, so an edge seen during the last
     /// cycle of an instruction is only serviced after the next instruction.
     nmi_edge_seen_prev: bool,
+    /// D1 dot-offset plumbing: dots recorded by the PPU at the end of the last
+    /// two CPU cycles: [vbl_set, vbl_clear, nmi_enable, nmi_disable].
+    dot_history: [[u32; 4]; 2],
+    dot_history_idx: usize,
     /// NMI/IRQ line state sampled just before the most recent tick: this is
     /// the penultimate-cycle state the 6502 uses to decide about interrupts.
     nmi_before_tick: bool,
@@ -116,6 +120,8 @@ impl MainBus {
             nmi_line_prev_sample: false,
             nmi_edge_seen: false,
             nmi_edge_seen_prev: false,
+            dot_history: [[0; 4]; 2],
+            dot_history_idx: 0,
             nmi_before_tick: false,
             irq_before_tick: false,
             nmi_before_prev_tick: false,
@@ -369,7 +375,14 @@ impl BusInterface for MainBus {
                     // seen in this very CPU cycle it has not been committed
                     // yet, so the read cancels it; an edge that was already
                     // visible at the previous boundary still fires.
-                    self.nmi_line = self.ppu.nmi_interrupt;
+                    self.dot_history[self.dot_history_idx] = [
+            self.ppu.vbl_set_dot,
+            self.ppu.vbl_clear_dot,
+            self.ppu.nmi_enable_dot,
+            self.ppu.nmi_disable_dot,
+        ];
+        self.dot_history_idx ^= 1;
+        self.nmi_line = self.ppu.nmi_interrupt;
                     if self.nmi_edge_seen && !self.nmi_edge_seen_prev {
                         self.nmi_edge_seen = false;
                     }
@@ -472,6 +485,13 @@ impl BusInterface for MainBus {
         for _ in 0..a12_ticks {
             self.tick_mapper_irq();
         }
+        self.dot_history[self.dot_history_idx] = [
+            self.ppu.vbl_set_dot,
+            self.ppu.vbl_clear_dot,
+            self.ppu.nmi_enable_dot,
+            self.ppu.nmi_disable_dot,
+        ];
+        self.dot_history_idx ^= 1;
         self.nmi_line = self.ppu.nmi_interrupt;
         // The CPU's NMI input is edge-sensitive: latch the rising edge so a
         // later $2002 read cannot swallow an NMI that has already been seen.
