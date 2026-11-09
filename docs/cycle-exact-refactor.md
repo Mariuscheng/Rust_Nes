@@ -82,6 +82,12 @@
   ——`sta $4014` 之後整個 513/514 cycle 的 DMA 期間 offset 停在 7/8，只有 +527 到 9。
   → DMA 不會吞掉 pending IRQ，只是延後 handler；DMA 期間才到的 IRQ 要等下一個
   指令結束才認。
+
+  **實測（本專案現況）**：列出的 offset 是 `0,0,1,1,2,2,4,4,7,7,7,7,8,8,…`，整體比
+  預期慢一個 clock，而且最後停在 `8 +526`（少了 `9 +527`）。因為每一列的 IRQ 都是
+  APU frame IRQ，這個「慢一個 clock」和下面 apu_test 的 29830/29831 是**同一個根因**：
+  先修好 frame IRQ 的相位，再回來看 DMA 這一項。已驗證：把 poll 改成「DMA 前取樣」
+  對這一項沒有影響（尚未 commit）。
 - **cpu_interrupts 5-branch_delays_irq**：taken 且未跨頁的分支**不會**在最後一個 cycle
   poll IRQ，所以分支目標的那條指令會先執行；跨頁分支、JMP、LDA 沒有這個現象。
 - **apu_test 6-irq_flag_timing**：寫 `$4017` 後 frame IRQ 旗標在 29831/29832/29833
