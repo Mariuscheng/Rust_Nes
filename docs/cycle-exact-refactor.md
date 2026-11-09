@@ -166,9 +166,25 @@ frame，VBL set 固定在 dot 82182）：
    採樣到這個邊緣。
 2. enable→disable 的間隔在 00–05 列是 108 dots（36 cycles），06–08 列是 54 dots
    （18 cycles）——比 ROM 原始碼的 `nop; nop; lda #0; sta $2000`（10 cycles）都長，
-   代表中間還有東西在跑（很可能是 NMI handler 本身，或 CRC/print 的巨集）。下一輪
-   要在 trace 裡把 `nmi_count` 與 PC 一起印出來，才能確定「NMI 到底有沒有被取用、
-   被誰取用」。
+   代表中間還有東西在跑。
+
+**Round 8 追出來了**：長出來的 cycle 是 ROM 的 `sync_vbl` 輪詢在跑。trace 顯示：
+
+```
+[SET]     f=866 sl=241 cy=1  out=true     ← VBL 設起，NMI 已開
+[RD2002]  f=866 sl=241 cy=3               ← 同一 frame 內 2 dot 後就有一次 $2002 讀取
+[W2000]   f=866 sl=241 cy=33 data=0x00 vbl=false
+```
+
+也就是說，測項 7 的每一列都會在 VBL set 之後 **2 個 dot** 讀一次 `$2002`，這次讀取
+會清掉旗標並（依我們的規則）取消 NMI。測項 6（suppression）要求「讀取在 F/F+1 要
+取消 NMI、F+2 不取消」；實測把取消窗口從「同一個 tick」收窄成 `dots_since_set <= 1`
+會讓測項 6 退回 `05/06 = V N`，維持原狀則測項 7 的 03/04 列不產生 NMI。
+
+→ **兩個測項要求的窗口差一個 dot**，而這個 dot 只能來自 CPU tick 邊界與 PPU dot 的
+相位（odd frame 的 skip 每兩 frame 位移 1 dot）。下一步應該先把「CPU tick 邊界落在
+哪個 dot」印出來（`[W2000]` 已顯示 sl/cy，可直接反推），確認偶/奇 frame 的邊界
+是否如預期位移，再把取消窗口改成以「邊界相對 dot」表示。
 
 ## 8. 風險
 
