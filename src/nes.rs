@@ -113,26 +113,23 @@ impl NesConsole {
 
         // ── 2. OAM DMA requested by $4014 runs right after the instruction.
         //       The CPU is halted for 513/514 cycles while PPU and APU keep
-        //       advancing, so NMI/IRQ raised during the transfer are seen at
-        //       the next instruction boundary. ──
-        let dma_ran = if let Some(page) = self.bus.take_dma_request() {
+        //       advancing. The interrupt poll for the instruction that wrote
+        //       $4014 happens before the transfer: an IRQ already pending there
+        //       is serviced as soon as the DMA finishes (return address is the
+        //       instruction after the write), while an IRQ that only shows up
+        //       during the DMA waits for one more instruction. cpu_interrupts
+        //       4-irq_and_dma pins exactly that split. ──
+        let delay = self.cpu.poll_delay;
+        let irq_before_dma = self.bus.irq_asserted_before_tick(delay);
+        if let Some(page) = self.bus.take_dma_request() {
             total_cpu_cycles += self.bus.run_dma(page);
-            true
-        } else {
-            false
-        };
+        }
 
         // ── 3. Interrupt dispatch (NMI first: it is not maskable) ──
         // The 6502 polls the interrupt lines on the cycle before its last one
         // (a taken branch without a page cross is one cycle earlier again,
-        // see `CPU::poll_delay`). After a DMA the CPU was halted, so the live
-        // line state is the relevant one.
-        let delay = self.cpu.poll_delay;
-        let irq_sample = if dma_ran {
-            self.bus.irq_asserted()
-        } else {
-            self.bus.irq_asserted_before_tick(delay)
-        };
+        // see `CPU::poll_delay`).
+        let irq_sample = irq_before_dma;
 
         // NMI is edge-triggered: the bus latches the rising edge on the PPU's
         // NMI line, and the poll consumes it. A $2002 read that clears the flag

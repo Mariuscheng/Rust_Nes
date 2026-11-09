@@ -149,8 +149,10 @@ fn ppu_vbl_nmi_known_nmi_on_timing_failure() {
 
 #[test]
 #[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
-fn apu_test_known_irq_flag_timing_failure() {
-    assert_known_failure("apu_test.nes", 6_000, "6 of 8");
+fn apu_test_known_dmc_timing_failure() {
+    // Tests 1-6 pass (the frame IRQ now lands at 29831 with a three-cycle
+    // assertion window); test 7 is the DMC timing test.
+    assert_known_failure("apu_test.nes", 6_000, "7 of 8");
 }
 
 #[test]

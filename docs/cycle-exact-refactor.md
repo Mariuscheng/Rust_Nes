@@ -11,12 +11,12 @@
 
 | ROM | 結果 | 卡點 |
 |---|---|---|
-| `ppu_vbl_nmi` | 6/10 | 測項 6（suppression）已修好，現在卡測項 7 `nmi_on_timing` |
+| `4-irq_and_dma` | ✅ Passed | — |
+| `5-branch_delays_irq` | ✅ Passed | — |
+| `ppu_vbl_nmi` | 6/10 | 測項 7 `nmi_on_timing`（`$2000` 開啟 NMI 的時機） |
 | `cpu_interrupts` | 1/5 | 測項 2 `nmi_and_brk`（最後一列差 1 個 CPU cycle） |
-| `apu_test` | 5/8 | 測項 6 `irq_flag_timing` 的 check #2 |
+| `apu_test` | 6/8 | 測項 7（DMC timing） |
 | `3-nmi_and_irq` | Failed | NMI/IRQ 優先權 |
-| `4-irq_and_dma` | Failed | IRQ 與 OAM DMA 的交錯 |
-| `5-branch_delays_irq` | Failed | `test_jmp` 子測項 |
 | `registers` | 卡住 | 需要 soft reset（與本重構無關） |
 
 ## 1. 現況模型
@@ -61,8 +61,19 @@
 | **P0** | 診斷：列出 padding opcode、抓各 ROM 的失敗訊息 | ✅ |
 | **P1** | 存取位置：補齊 stack/JMP/RTS/RTI/BRK/RMW/寫入指令的內部 cycle 與 dummy access；`used == total` 變成 assertion | `instr_timing`、`all_instrs`、golden |
 | **P2** | 中斷語意：poll_iflag / poll_delay / NMI 邊緣鎖存 | ✅ `ppu_vbl_nmi` 6、`cpu_interrupts` 1 |
-| **P3** | DMA：`$4014` 寫入後的起始 cycle、513/514、DMC 搶 cycle 與 IRQ 的交錯 | `4-irq_and_dma` |
-| **P4** | PPU/APU 事件相位：`$2000` 開啟 NMI 的時機（測項 7）、frame counter IRQ 的 3-cycle 窗口 | `ppu_vbl_nmi` 7、`apu_test` 6、`5-branch_delays_irq` |
+| **P3** | DMA：poll 點移到 DMA 之前、513/514 的奇偶規則反了 | ✅ `4-irq_and_dma`、`5-branch_delays_irq` |
+| **P4** | APU frame IRQ：wall-clock countdown（29831）、3-cycle 斷言窗口、奇偶 jitter | ✅ `apu_test` 1–6 |
+| **P5** | 剩下：`$2000` 開 NMI 的時機、NMI/BRK 同拍、NMI/IRQ 優先權 | `ppu_vbl_nmi` 7、`cpu_interrupts` 2、`3-nmi_and_irq` |
+
+### P3/P4 的兩個關鍵發現
+
+- **DMA 的 513/514 規則原本是反的**：`extra = cpu_cycle_count & 1` 應為 `^ 1`。
+  反轉後 `4-irq_and_dma` 由 Failed 變 Passed；代價是 `Mario.nes` frame 600 有
+  **2 個像素**改變（non-black 57680 → 57678），因為 OAM DMA 的長度影響 sprite-0
+  split 的 scanline 位置。golden 已重新生成並在 commit 中註明。
+- **frame IRQ 不能用 sequencer 的 step 門檻**：第一段序列有 `shift = 3` 的相位偏移，
+  但 IRQ 仍固定在寫入後 29831 個 CPU clock。改成獨立 wall-clock countdown 後，
+  測項 4（jitter）與測項 6（flag 寬度）才同時成立。
 
 ## 5. 各測項的正確答案（從 blargg ROM 原始碼取得）
 

@@ -191,7 +191,7 @@ impl MainBus {
     /// $2004 DMA. Returns the number of CPU cycles consumed.
     pub fn run_dma(&mut self, page: u8) -> u16 {
         let base = (page as u16) << 8;
-        let extra = (self.cpu_cycle_count & 1) as u16;
+        let extra = ((self.cpu_cycle_count & 1) ^ 1) as u16;
 
         // Halt/alignment cycles before the first byte.
         self.tick();

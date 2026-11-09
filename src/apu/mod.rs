@@ -47,6 +47,15 @@ pub struct APU {
     frame_irq_inhibit: bool,
     /// Frame counter IRQ 是否已觸發（讀取 $4015 時清除）
     pub frame_interrupt: bool,
+    /// Remaining CPU cycles of the frame-IRQ assertion window. The flag is set
+    /// on three consecutive cycles; a $4015 read clears it, but the rest of the
+    /// window sets it again (apu_test 6-irq_flag_timing 4/5).
+    frame_irq_arm: u8,
+    /// Cycles until the next frame-counter IRQ. Counted in wall-clock CPU
+    /// cycles rather than sequencer steps, because the sequencer's first
+    /// sequence is phase-shifted but the IRQ still lands 29831 clocks after a
+    /// mode-0 `$4017` write (apu_test 4-jitter).
+    frame_irq_countdown: u32,
     /// DMC IRQ 是否已觸發
     pub dmc_interrupt: bool,
     frame_step: i64,
@@ -78,6 +87,8 @@ impl APU {
             frame_mode: 0,
             frame_irq_inhibit: true,
             frame_interrupt: false,
+            frame_irq_arm: 0,
+            frame_irq_countdown: 0,
             dmc_interrupt: false,
             frame_step: 0,
             frame_step_offset: 0,
@@ -163,6 +174,8 @@ impl APU {
                 self.frame_irq_inhibit = (data & 0x40) != 0;
                 if self.frame_irq_inhibit {
                     self.frame_interrupt = false;
+                    self.frame_irq_arm = 0;
+                    self.frame_irq_countdown = 0;
                 }
                 // 依照寫入當下的 CPU cycle 奇偶決定 jitter 模式。
                 // Even cycle: offset=0，下一個 tick 就開始計數。
@@ -171,6 +184,15 @@ impl APU {
                 self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 { 0 } else { -2 };
                 self.frame_step = self.frame_step_offset;
                 self.frame_first_sequence = true;
+                // Mode 0 re-arms the frame IRQ: first flag 29831 clocks after
+                // the write on an even cycle, one clock later on an odd cycle
+                // (the write lands between two APU clocks).
+                self.frame_irq_arm = 0;
+                self.frame_irq_countdown = if self.frame_mode == 0 && !self.frame_irq_inhibit {
+                    29831 + if (self.total_cpu_cycles & 1) == 0 { 0 } else { 1 }
+                } else {
+                    0
+                };
                 // mode 1 ($80)：寫入後立刻觸發一次 quarter + half，
                 // 發生在 sequencer 重置之後，不計入 frame_step。
                 if self.frame_mode == 1 {
@@ -241,6 +263,13 @@ impl APU {
     /// Even jitter（offset 0）與 odd jitter（offset -2）共用同一組門檻；
     /// odd 相位的第一段序列會多 2 個 tick，之後恢復穩態週期。
     fn frame_counter_tick(&mut self) {
+        // Continue an assertion window: the IRQ flag covers three consecutive
+        // CPU cycles, so a $4015 read in the middle does not keep it cleared.
+        if self.frame_irq_arm > 0 {
+            self.frame_interrupt = true;
+            self.frame_irq_arm -= 1;
+        }
+
         self.frame_step += 1;
         let s = self.frame_step;
 
@@ -265,10 +294,21 @@ impl APU {
             self.clock_half_frame();
         }
 
-        if self.frame_mode == 0 {
-            if s == FRAME_EVENTS[6] && !self.frame_irq_inhibit {
-                self.frame_interrupt = true;
+        // Frame-IRQ countdown runs in wall-clock cycles, independent of the
+        // sequencer's first-sequence phase shift. The flag is set on three
+        // consecutive cycles; a $4015 read in between does not keep it clear.
+        if self.frame_irq_countdown > 0 {
+            self.frame_irq_countdown -= 1;
+            if self.frame_irq_countdown == 0 {
+                if self.frame_mode == 0 && !self.frame_irq_inhibit {
+                    self.frame_interrupt = true;
+                    self.frame_irq_arm = 2;
+                }
+                self.frame_irq_countdown = 29830;
             }
+        }
+
+        if self.frame_mode == 0 {
             if s == FRAME_EVENTS[7] + shift {
                 self.frame_step = 0;
                 self.frame_first_sequence = false;
@@ -870,52 +910,39 @@ mod tests {
 
     #[test]
     fn apu_frame_counter_odd_jitter_sequence_length() {
-        // Odd jitter (offset = -2): a write that lands between APU clocks skips
-        // one full clock, so the first sequence is 29832 ticks long and the
-        // steady-state period stays 29830.
+        // Odd write cycle: the write lands between two APU clocks, so the flag
+        // is first asserted one CPU clock later than after an even write.
         let mut apu = APU::new(44100);
-        apu.frame_mode = 0;
-        apu.frame_step_offset = -2;
-        apu.frame_step = -2;
-        apu.frame_irq_inhibit = false;
+        apu.total_cpu_cycles = 1; // odd write cycle
+        let _ = apu.write_register(0x4017, 0x00); // mode 0, IRQ enabled
 
         for _ in 0..29831 {
             let _ = apu.tick_one();
         }
-        assert_eq!(apu.frame_step, 29829);
-        assert!(!apu.frame_interrupt);
+        assert!(
+            !apu.frame_interrupt,
+            "odd write: flag is still clear at 29831"
+        );
 
-        // 29832nd tick: step → 29830: IRQ + reset to the steady-state phase.
         let _ = apu.tick_one();
-        assert_eq!(apu.frame_step, 0);
-        assert!(apu.frame_interrupt);
+        assert!(apu.frame_interrupt, "odd write: flag is set at 29832");
     }
 
     #[test]
     fn apu_frame_counter_even_jitter_sequence_length() {
-        // Verify that even jitter (offset=0) 4-step sequence wraps at
-        // 29830 ticks (IRQ at 29830).
+        // Even write cycle: the flag is first asserted 29831 clocks after the
+        // mode-0 `$4017` write (apu_test 4-jitter pins both edges: clear at
+        // 29830, set by 29832), then held for a three-cycle window.
         let mut apu = APU::new(44100);
-        apu.frame_mode = 0;
-        apu.frame_step_offset = 0;
-        apu.frame_step = 0;
-        apu.frame_irq_inhibit = false;
+        apu.total_cpu_cycles = 0; // even write cycle
+        let _ = apu.write_register(0x4017, 0x00); // mode 0, IRQ enabled
 
-        // Step to just before the half+Q (29828)
-        for _ in 0..29828 {
+        for _ in 0..29830 {
             let _ = apu.tick_one();
         }
-        assert_eq!(apu.frame_step, 29828);
-        assert!(!apu.frame_interrupt);
+        assert!(!apu.frame_interrupt, "IRQ must not be set at 29830");
 
-        // 29829: quarter + half (no IRQ yet)
         let _ = apu.tick_one();
-        assert_eq!(apu.frame_step, 29829);
-        assert!(!apu.frame_interrupt);
-
-        // 29830: IRQ + reset
-        let _ = apu.tick_one();
-        assert_eq!(apu.frame_step, 0);
-        assert!(apu.frame_interrupt);
+        assert!(apu.frame_interrupt, "IRQ is set at 29831");
     }
 }
