@@ -51,7 +51,28 @@ MasterClock (u64, 單位 = CPU cycle)
 - 每一階段結束都要跑 `cargo test`、`cargo test --release -- --ignored`（含
   12 golden）、以及三個計時 ROM。
 
-## 4. 為什麼值得做（除了那三個測試）
+## 5. C1 的具體做法（下一輪實作）
+
+目標：讓 PPU 暫存器存取落在 cycle 內的一個 dot 上（目前存取永遠在「跑完 3 dots」之後）。
+
+限制爆炸半徑：只改 `$2000-$3FFF` 的存取，其他位址（RAM / APU / mapper）不受影響。
+
+```rust
+// MainBus::read / write 內
+if (0x2000..=0x3FFF).contains(&addr) {
+    self.ppu_pre_access();   // 只推進 PPU 2 dots，不碰 APU / cpu_cycle_count
+    let v = self.ppu.cpu_read(reg);
+    self.finish_cycle();     // 補第 3 個 dot + APU + 線路取樣（原 tick() 其餘部分）
+} else {
+    self.tick();             // 原行為
+    // ...access...
+}
+```
+
+風險：PPU 存取前後多一次函式呼叫，效能略降；12 個 golden 可能位移，若有變動必須
+逐項解釋後才能更新。
+
+## 6. 為什麼值得做（除了那三個測試）
 
 目前的架構讓「一次存取」與「一個 cycle」綁死，所以：
 - `$2001` 渲染開關、`$2005/$2006` 的 dot 級效果無法精確
