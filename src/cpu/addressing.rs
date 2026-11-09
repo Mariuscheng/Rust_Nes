@@ -42,10 +42,14 @@ pub(crate) fn get_operand_address_with_page(
         AddressMode::ZeroPage => AddrResult::new(bus.read(param_ptr) as u16, false, None),
         AddressMode::ZeroPageX => {
             let base = bus.read(param_ptr);
+            // Cycle 3 always reads the un-indexed zero-page address, even when
+            // the indexed address stays on the same page.
+            let _ = bus.read(base as u16);
             AddrResult::new(base.wrapping_add(cpu.x) as u16, false, None)
         }
         AddressMode::ZeroPageY => {
             let base = bus.read(param_ptr);
+            let _ = bus.read(base as u16);
             AddrResult::new(base.wrapping_add(cpu.y) as u16, false, None)
         }
         AddressMode::Absolute => {
@@ -87,7 +91,10 @@ pub(crate) fn get_operand_address_with_page(
             AddrResult::new(addr, page_crossed, dummy_addr)
         }
         AddressMode::IndirectX => {
-            let base = (bus.read(param_ptr).wrapping_add(cpu.x) as u16) & 0x00FF;
+            let zp = bus.read(param_ptr);
+            // Cycle 3 reads the un-indexed zero-page address.
+            let _ = bus.read(zp as u16);
+            let base = zp.wrapping_add(cpu.x) as u16;
             let lo = bus.read(base) as u16;
             let hi = bus.read(base.wrapping_add(1) & 0x00FF) as u16;
             AddrResult::new((hi << 8) | lo, false, None)

@@ -53,7 +53,7 @@ pub(crate) fn op_sta(
     // Indexed addressing modes perform a dummy read before the write.
     // IndirectX already performs its dummy read at (zp+X) during address
     // calculation; no additional dummy read at the final effective address.
-    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute | AddressMode::IndirectX) {
+    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute | AddressMode::IndirectX | AddressMode::ZeroPageX | AddressMode::ZeroPageY) {
         let dummy_addr = res.dummy_addr.unwrap_or(res.addr);
         bus.read(dummy_addr);
     }
@@ -68,7 +68,7 @@ pub(crate) fn op_stx(
 ) {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     // Indexed addressing modes (ZeroPageY) perform a dummy read before the write.
-    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute) {
+    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute | AddressMode::ZeroPageX | AddressMode::ZeroPageY) {
         let dummy_addr = res.dummy_addr.unwrap_or(res.addr);
         bus.read(dummy_addr);
     }
@@ -83,7 +83,7 @@ pub(crate) fn op_sty(
 ) {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     // Indexed addressing modes (ZeroPageX) perform a dummy read before the write.
-    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute) {
+    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute | AddressMode::ZeroPageX | AddressMode::ZeroPageY) {
         let dummy_addr = res.dummy_addr.unwrap_or(res.addr);
         bus.read(dummy_addr);
     }
