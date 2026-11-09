@@ -1,6 +1,6 @@
 # Step 1：把「時間」收斂成單一時鐘（per-access ticking）
 
-> 狀態：**1a、1b 已完成**（見 §0 進度），1c–1e 待做。
+> 狀態：**1a–1c 已完成**（見 §0 進度），1d–1e 待做。
 > 目標：讓每一次 CPU 匯流排存取都推進 1 個 CPU cycle（3 PPU dots + 1 APU cycle），
 > 取代現在「整條指令跑完再補 tick」的模型。
 > 這一階段**不做**完整 cycle-stepped CPU state machine；它先消除「暫存器存取相位」
@@ -13,8 +13,8 @@
 | 階段 | 狀態 | 內容 / 觀測 |
 |---|---|---|
 | **1a** | ✅ `a61257e` | `MainBus` 去 `RefCell`、`read`/`write` 改 `&mut`、新增 `tick()`。行為不變：golden 10/10 一致。 |
-| **1b** | ✅ 本次 | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
-| 1c | ⬜ | APU lockstep + DMC request |
+| **1b** | ✅ `9f6fd30` | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
+| **1c** | ✅ 本次 | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
 | 1d | ⬜ | DMA 移到指令後執行 |
 | 1e | ⬜ | 中斷取樣精確化（移除 `skip_irq` 等近似） |
 
@@ -27,6 +27,15 @@
   `vbl_set_time` / `jitter` / `nmi_and_brk` 仍為已知失敗（1c–1e 才處理 APU 與中斷取樣）。
 - 效能：Mario headless 2.34 ms/frame（1a 為 2.26 ms），差異在雜訊範圍。
 - debug build 跑 `instr_timing`：沒有觸發 cycle 記帳的 `debug_assert`。
+
+**1c 觀測**
+
+- golden 完全不變（APU 不影響畫面）；ROM 套件結果不變，`jitter` 仍停在 test 4/8
+  —— frame IRQ 仍是在指令邊界才被 CPU 取用，屬 1e 的範圍。
+- 新增 `apu_produces_audio`：在標題畫面按 Start 後跑 400 幀，驗證
+  (a) 有非靜音樣本、(b) 樣本數 = 400 幀 × 735（誤差 2% 內）→ 證明 APU 正好每個 CPU
+  cycle 被推進一次，沒有重複或漏 tick。
+- 效能：Mario headless 2.17 ms/frame。
 
 ---
 

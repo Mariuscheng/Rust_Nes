@@ -124,13 +124,15 @@ impl NesConsole {
             irq_cycles_acc += 7;
         }
 
-        // ── 3. APU: frame counter / DMC (may steal cycles via DMC DMA) ──
-        let stolen = self.bus.step_apu(total_cpu_cycles);
-        if stolen > 0 {
-            for _ in 0..stolen {
+        // ── 3. Pay DMC DMA stalls raised during interrupt vectoring ──
+        let mut apu_stolen: u64 = 0;
+        let stalled = self.bus.take_immediate_stolen_cycles();
+        if stalled > 0 {
+            for _ in 0..stalled {
                 self.bus.tick();
             }
-            total_cpu_cycles = total_cpu_cycles.saturating_add(stolen as u16);
+            apu_stolen += stalled as u64;
+            total_cpu_cycles = total_cpu_cycles.saturating_add(stalled);
         }
 
         // ── 4. Accumulate timing counters ──
@@ -138,7 +140,7 @@ impl NesConsole {
         self.timing_instr_cycles += instr_cycles as u64;
         self.timing_nmi_cycles += nmi_cycles_acc as u64;
         self.timing_irq_cycles += irq_cycles_acc as u64;
-        self.timing_apu_stolen += stolen;
+        self.timing_apu_stolen += apu_stolen;
         self.timing_step_count += 1;
     }
 

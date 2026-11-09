@@ -291,12 +291,9 @@ impl CPU {
         // ── Calculate total cycles ──
         let base_cycles = opcode.cycles as u16;
         let mut total_cycles: u16 = base_cycles + extra_cycles as u16;
-        let stolen = bus.take_immediate_stolen_cycles();
-        total_cycles = total_cycles.wrapping_add(stolen);
 
         // Bus accesses already advanced one cycle each while the handler ran;
-        // pad the remaining internal cycles so the instruction costs exactly
-        // `total_cycles` on the shared clock.
+        // pad the remaining internal cycles.
         let used = (bus.cpu_cycles() - start_cycles) as u16;
         debug_assert!(
             used <= total_cycles,
@@ -308,6 +305,18 @@ impl CPU {
         );
         for _ in used..total_cycles {
             bus.tick();
+        }
+
+        // DMC DMA raised during the instruction (or while padding) stalls the
+        // CPU for 4 cycles; pay those now. Anything raised while paying them is
+        // picked up by the next instruction.
+        let stolen = bus.take_immediate_stolen_cycles();
+        if stolen > 0 {
+            total_cycles = total_cycles.saturating_add(stolen);
+            let used = (bus.cpu_cycles() - start_cycles) as u16;
+            for _ in used..total_cycles {
+                bus.tick();
+            }
         }
 
         // Decrement interrupt delay counters after instruction completes.

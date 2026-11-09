@@ -80,15 +80,9 @@ impl APU {
 
     /// 處理 APU register write（$4000-$4017）。
     ///
-    /// `bus` 參數僅在 $4015 write 且 DMC 需要立即讀取 sample 時使用。
-    /// 回傳 immediate read count（DMC 從 bus 立即讀取的 bytes 數）。
-    pub fn write_register(
-        &mut self,
-        addr: u16,
-        data: u8,
-        bus: Option<&mut dyn crate::bus::BusInterface>,
-    ) -> u8 {
-        let mut immediate_reads: u8 = 0;
+    /// 若 `$4015` 的寫入讓 DMC 需要立即取得 sample，回傳要讀取的位址；
+    /// bus 讀取後以 `fill_sample()` 回填。
+    pub fn write_register(&mut self, addr: u16, data: u8) -> Option<u16> {
         match addr {
             0x4000..=0x4003 => {
                 self.pulse1.write_reg((addr - 0x4000) as u8, data);
@@ -141,15 +135,8 @@ impl APU {
                 if !enable_noise {
                     self.noise.length_counter = 0;
                 }
-                if let Some(b) = bus
-                    && enable_dmc
-                    && self.dmc.sample_buffer_empty
-                    && self.dmc.bytes_remaining > 0
-                {
-                    let (_irq, did_read) = self.dmc.fill_sample_buffer(b);
-                    if did_read {
-                        immediate_reads = immediate_reads.saturating_add(1);
-                    }
+                if enable_dmc && self.dmc.sample_buffer_empty && self.dmc.bytes_remaining > 0 {
+                    return self.dmc.take_sample_request();
                 }
             }
             0x4017 => {
@@ -172,7 +159,7 @@ impl APU {
             }
             _ => {}
         }
-        immediate_reads
+        None
     }
 
     /// 讀取 APU status register（$4015）。
@@ -282,46 +269,29 @@ impl APU {
         }
     }
 
-    /// 推進 APU 狀態 `cpu_cycles` 步。
+    /// 推進 APU 一個 CPU cycle。
     ///
-    /// 回傳被 DMC 挪用的總 CPU cycle 數（需補償到 PPU）。
-    pub fn step(
-        &mut self,
-        cpu_cycles: u16,
-        bus: &mut dyn crate::bus::BusInterface,
-    ) -> u16 {
-        let mut stolen_total: u16 = 0;
-        for _ in 0..cpu_cycles {
-            self.total_cpu_cycles += 1;
-            self.triangle.clock_timer();
-            if self.total_cpu_cycles.is_multiple_of(2) {
-                self.pulse1.clock_timer();
-                self.pulse2.clock_timer();
-                self.noise.clock_timer();
-            }
-            let (dmc_irq, read_count) = self.dmc.clock_timer(bus);
-            if read_count > 0 {
-                stolen_total = stolen_total
-                    .saturating_add((read_count as u16).saturating_mul(4));
-                for _ in 0..4 {
-                    self.total_cpu_cycles += 1;
-                    self.triangle.clock_timer();
-                    if self.total_cpu_cycles.is_multiple_of(2) {
-                        self.pulse1.clock_timer();
-                        self.pulse2.clock_timer();
-                        self.noise.clock_timer();
-                    }
-                    self.frame_counter_tick();
-                    self.generate_sample();
-                }
-            }
-            if dmc_irq {
-                self.dmc_interrupt = true;
-            }
-            self.frame_counter_tick();
-            self.generate_sample();
+    /// 若 DMC 需要新的 sample byte，回傳要讀取的位址；bus 讀取後以
+    /// `fill_sample()` 回填（DMC 本身不做記憶體存取）。
+    pub fn tick_one(&mut self) -> Option<u16> {
+        self.total_cpu_cycles += 1;
+        self.triangle.clock_timer();
+        if self.total_cpu_cycles.is_multiple_of(2) {
+            self.pulse1.clock_timer();
+            self.pulse2.clock_timer();
+            self.noise.clock_timer();
         }
-        stolen_total
+        self.dmc.clock_timer();
+        self.frame_counter_tick();
+        self.generate_sample();
+        self.dmc.take_sample_request()
+    }
+
+    /// 回填 DMC 的 sample byte（由 bus 讀取後呼叫）。
+    pub fn fill_sample(&mut self, val: u8) {
+        if self.dmc.fill_sample(val) {
+            self.dmc_interrupt = true;
+        }
     }
 
     /// 混音並產生一個 output sample（若有需要）
@@ -835,68 +805,39 @@ impl APU {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::BusInterface;
-
-    struct DummyBus {
-        mem: [u8; 65536],
-        cpu_pc: u16,
-    }
-    impl DummyBus {
-        fn new() -> Self {
-            Self {
-                mem: [0; 65536],
-                cpu_pc: 0,
-            }
-        }
-    }
-    impl BusInterface for DummyBus {
-        fn read(&mut self, addr: u16) -> u8 {
-            self.mem[addr as usize]
-        }
-        fn write(&mut self, addr: u16, data: u8) {
-            self.mem[addr as usize] = data;
-        }
-        fn set_cpu_pc(&mut self, pc: u16) {
-            self.cpu_pc = pc;
-        }
-        fn take_immediate_stolen_cycles(&mut self) -> u16 {
-            0
-        }
-        fn tick(&mut self) -> bool {
-            false
-        }
-    }
 
     #[test]
     fn apu_pulse_produces_samples() {
         let mut apu = APU::new(44100);
-        apu.write_register(0x4015, 0x01, None);
-        apu.write_register(0x4000, 0b1011_1111, None);
-        apu.write_register(0x4002, 0x70, None);
-        apu.write_register(0x4003, 0x08, None);
-        let mut bus = DummyBus::new();
+        let _ = apu.write_register(0x4015, 0x01);
+        let _ = apu.write_register(0x4000, 0b1011_1111);
+        let _ = apu.write_register(0x4002, 0x70);
+        let _ = apu.write_register(0x4003, 0x08);
         for _ in 0..=44100 / 60 {
-            let _ = apu.step(1, &mut bus);
+            let _ = apu.tick_one();
         }
-        assert!(!apu.drain_audio_buffer().is_empty());
+        let samples = apu.drain_audio_buffer();
+        assert!(!samples.is_empty());
+        let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.0, "APU mixer produced only silence");
     }
 
     #[test]
     fn apu_status_reflects_length_counters() {
         let mut apu = APU::new(44100);
-        apu.write_register(0x4015, 0x0F, None);
-        apu.write_register(0x4003, 0x08, None);
-        apu.write_register(0x4007, 0x08, None);
-        apu.write_register(0x400B, 0x08, None);
-        apu.write_register(0x400F, 0x08, None);
+        let _ = apu.write_register(0x4015, 0x0F);
+        let _ = apu.write_register(0x4003, 0x08);
+        let _ = apu.write_register(0x4007, 0x08);
+        let _ = apu.write_register(0x400B, 0x08);
+        let _ = apu.write_register(0x400F, 0x08);
         assert_eq!(apu.read_status() & 0x0F, 0x0F);
     }
 
     #[test]
     fn apu_reset_clears_state() {
         let mut apu1 = APU::new(44100);
-        apu1.write_register(0x4015, 0x0F, None);
-        apu1.write_register(0x4003, 0x08, None);
+        let _ = apu1.write_register(0x4015, 0x0F);
+        let _ = apu1.write_register(0x4003, 0x08);
         let mut apu2 = APU::new(44100);
         assert_eq!(apu2.read_status() & 0x0F, 0);
     }
@@ -919,16 +860,15 @@ mod tests {
         apu.frame_step = -1;
         apu.frame_irq_inhibit = false;
 
-        let mut bus = DummyBus::new();
         // 29829 ticks: step goes -1 → 29828 (stops at 29828, no trigger)
         for _ in 0..29829 {
-            apu.step(1, &mut bus);
+            let _ = apu.tick_one();
         }
         assert_eq!(apu.frame_step, 29828);
         assert!(!apu.frame_interrupt);
 
         // 29830th tick: step → 29829, triggers quarter+half+IRQ, resets to -1
-        apu.step(1, &mut bus);
+        let _ = apu.tick_one();
         assert_eq!(apu.frame_step, -1);
         assert!(apu.frame_interrupt);
     }
@@ -943,21 +883,20 @@ mod tests {
         apu.frame_step = 0;
         apu.frame_irq_inhibit = false;
 
-        let mut bus = DummyBus::new();
         // Step to just before the half+Q (29828)
         for _ in 0..29828 {
-            apu.step(1, &mut bus);
+            let _ = apu.tick_one();
         }
         assert_eq!(apu.frame_step, 29828);
         assert!(!apu.frame_interrupt);
 
         // 29829: quarter + half (no IRQ yet)
-        apu.step(1, &mut bus);
+        let _ = apu.tick_one();
         assert_eq!(apu.frame_step, 29829);
         assert!(!apu.frame_interrupt);
 
         // 29830: IRQ + reset
-        apu.step(1, &mut bus);
+        let _ = apu.tick_one();
         assert_eq!(apu.frame_step, 0);
         assert!(apu.frame_interrupt);
     }

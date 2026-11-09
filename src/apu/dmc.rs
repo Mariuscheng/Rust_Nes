@@ -86,17 +86,20 @@ impl DmcChannel {
         self.bytes_remaining = self.sample_length;
     }
 
-    /// 嘗試從 bus 讀取一個 byte 填滿 sample buffer。
+    /// Address of the next sample byte to fetch, if the sample buffer is empty.
     ///
-    /// 回傳 `(irq_occurred, did_read)`。
-    pub fn fill_sample_buffer(
-        &mut self,
-        bus: &mut dyn crate::bus::BusInterface,
-    ) -> (bool, bool) {
-        if !self.sample_buffer_empty || self.bytes_remaining == 0 {
-            return (false, false);
+    /// The DMC has no memory access of its own: the bus performs the read and
+    /// hands the byte back through `fill_sample`.
+    pub fn take_sample_request(&self) -> Option<u16> {
+        if self.sample_buffer_empty && self.bytes_remaining > 0 {
+            Some(self.current_address)
+        } else {
+            None
         }
-        let val = bus.read(self.current_address);
+    }
+
+    /// Store a fetched sample byte. Returns true when the DMC IRQ fires.
+    pub fn fill_sample(&mut self, val: u8) -> bool {
         self.sample_buffer = val;
         self.sample_buffer_empty = false;
         self.silence_flag = false;
@@ -106,27 +109,20 @@ impl DmcChannel {
             self.current_address = self.current_address.wrapping_add(1);
         }
         self.bytes_remaining = self.bytes_remaining.saturating_sub(1);
-        let mut irq_occurred = false;
         if self.bytes_remaining == 0 {
             if self.loop_flag {
                 self.reload_sample();
-            } else if self.irq_enabled {
-                irq_occurred = true;
+                false
+            } else {
+                self.irq_enabled
             }
+        } else {
+            false
         }
-        (irq_occurred, true)
     }
 
-    /// 每個 CPU cycle 呼叫一次，處理 DMC timer 與 output level。
-    ///
-    /// 回傳 `(irq_occurred, read_count)`，其中 `read_count` 表示
-    /// DMC 從 bus 讀取了多少 bytes（每個 byte 對應 4 CPU cycle 被挪用）。
-    pub fn clock_timer(
-        &mut self,
-        bus: &mut dyn crate::bus::BusInterface,
-    ) -> (bool, u8) {
-        let mut reads: u8 = 0;
-        let mut irq = false;
+    /// Clock the DMC timer by one CPU cycle (output level / bit consumption).
+    pub fn clock_timer(&mut self) {
         let mut reloaded = false;
         if self.timer_value == 0 {
             self.timer_value = self.timer_period;
@@ -134,12 +130,10 @@ impl DmcChannel {
             if !self.silence_flag {
                 if (self.sample_buffer & 1) != 0 {
                     if self.output_level <= 125 {
-                        self.output_level =
-                            self.output_level.saturating_add(2);
+                        self.output_level = self.output_level.saturating_add(2);
                     }
                 } else if self.output_level >= 2 {
-                    self.output_level =
-                        self.output_level.saturating_sub(2);
+                    self.output_level = self.output_level.saturating_sub(2);
                 }
                 self.sample_buffer >>= 1;
             }
@@ -156,17 +150,9 @@ impl DmcChannel {
                 }
             }
         }
-        let (dmc_irq, did_read) = self.fill_sample_buffer(bus);
-        if did_read {
-            reads = 1;
-        }
-        if dmc_irq {
-            irq = true;
-        }
         if !reloaded && self.timer_value > 0 {
             self.timer_value -= 1;
         }
-        (irq, reads)
     }
 
     /// 取得當前輸出值（0-127）

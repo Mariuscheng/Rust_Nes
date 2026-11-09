@@ -38,39 +38,6 @@ pub trait BusInterface {
     }
 }
 
-/// Read-only view of the memory the APU can reach (DMC sample fetches, $4015).
-///
-/// The APU gets this instead of a `&MainBus`, so it never needs a borrow of
-/// the whole bus while the bus itself is mutably borrowed by the console.
-pub struct ApuMemoryView<'a> {
-    ram: &'a Ram,
-    mapper: &'a MapperVariant,
-}
-
-impl<'a> ApuMemoryView<'a> {
-    pub fn new(ram: &'a Ram, mapper: &'a MapperVariant) -> Self {
-        Self { ram, mapper }
-    }
-}
-
-impl BusInterface for ApuMemoryView<'_> {
-    fn read(&mut self, addr: u16) -> u8 {
-        match addr {
-            0x0000..=0x1FFF => self.ram.read(addr),
-            0x6000..=0xFFFF => self.mapper.read_prg(addr),
-            _ => 0,
-        }
-    }
-    fn write(&mut self, _addr: u16, _data: u8) {}
-    fn tick(&mut self) -> bool {
-        false
-    }
-    fn set_cpu_pc(&mut self, _pc: u16) {}
-    fn take_immediate_stolen_cycles(&mut self) -> u16 {
-        0
-    }
-}
-
 pub struct MainBus {
     ram: Ram,
     mapper: MapperVariant,
@@ -134,10 +101,26 @@ impl MainBus {
     // APU accessors
     // ══════════════════════════════════════════════
 
-    /// Step APU by `cpu_cycles`. Returns stolen CPU cycles (for DMC DMA).
-    pub fn step_apu(&mut self, cpu_cycles: u16) -> u64 {
-        let mut view = ApuMemoryView::new(&self.ram, &self.mapper);
-        self.apu.step(cpu_cycles, &mut view) as u64
+    /// Step the APU one cycle and handle a pending DMC sample request.
+    ///
+    /// The DMC never reads memory itself: it exposes an address and the bus
+    /// fetches the byte. Each fetched byte stalls the CPU for 4 cycles, which
+    /// is accumulated in `dma_stolen_cycles` and paid by `CPU::step`.
+    fn clock_apu(&mut self) {
+        if let Some(addr) = self.apu.tick_one() {
+            let byte = self.peek(addr);
+            self.apu.fill_sample(byte);
+            self.dma_stolen_cycles = self.dma_stolen_cycles.saturating_add(4);
+        }
+    }
+
+    /// Read memory without advancing the clock (DMC sample fetch).
+    fn peek(&self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => self.ram.read(addr),
+            0x6000..=0xFFFF => self.mapper.read_prg(addr),
+            _ => 0,
+        }
     }
 
     /// Drain accumulated audio samples.
@@ -354,16 +337,18 @@ impl BusInterface for MainBus {
                 self.ppu.oam.copy_from_slice(&oam_data);
             }
             0x4000..=0x4013 => {
-                self.apu.write_register(addr, data, None);
+                let _ = self.apu.write_register(addr, data);
             }
             0x4015 => {
-                let mut view = ApuMemoryView::new(&self.ram, &self.mapper);
-                self.apu.write_register(0x4015, data, Some(&mut view));
+                if let Some(addr) = self.apu.write_register(0x4015, data) {
+                    let byte = self.peek(addr);
+                    self.apu.fill_sample(byte);
+                }
             }
             0x4016 => self.joypad1.cpu_write(data),
             0x4017 => {
                 self.joypad2.cpu_write(data);
-                self.apu.write_register(0x4017, data, None);
+                let _ = self.apu.write_register(0x4017, data);
             }
             // Extended audio registers ($5000-$5FFF) — route to mapper for VRC6/MMC5
             0x5000..=0x5FFF => {
@@ -385,6 +370,7 @@ impl BusInterface for MainBus {
     fn tick(&mut self) -> bool {
         self.cpu_cycle_count += 1;
         self.ppu.tick(3);
+        self.clock_apu();
         let a12_ticks = self.ppu.a12_rising_count;
         self.ppu.a12_rising_count = 0;
         for _ in 0..a12_ticks {

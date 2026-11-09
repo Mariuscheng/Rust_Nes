@@ -15,6 +15,7 @@
 //! skipped instead of failing.
 
 use crate::cartridge::Cartridge;
+use crate::joypad::Button;
 use crate::nes::NesConsole;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -148,4 +149,46 @@ fn ppu_vbl_nmi_known_set_time_failure() {
 #[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
 fn apu_test_known_jitter_failure() {
     assert_known_failure("apu_test.nes", 6_000, "4 of 8");
+}
+
+#[test]
+#[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
+fn apu_produces_audio() {
+    let rom = "Mario.nes";
+    if !std::path::Path::new(rom).is_file() {
+        eprintln!("skipping {rom}: ROM not found");
+        return;
+    }
+
+    let cart = Cartridge::from_file(rom).expect("failed to load ROM");
+    let mut console = NesConsole::from_cartridge(cart);
+
+    // Press Start on the title screen so the gameplay music starts.
+    for frame in 0..400u64 {
+        if frame == 60 {
+            console.set_button(Button::Start, true);
+        }
+        if frame == 66 {
+            console.set_button(Button::Start, false);
+        }
+        console.step_frame();
+    }
+
+    let samples = console.drain_audio_samples();
+    assert!(!samples.is_empty(), "APU produced no samples");
+    assert!(
+        samples.iter().all(|s| s.is_finite()),
+        "APU produced non-finite samples"
+    );
+    let peak = samples.iter().fold(0.0f32, |peak, s| s.max(s.abs()));
+    assert!(peak > 1e-4, "APU output is silent (peak {peak})");
+
+    // One APU cycle per CPU cycle: ~735 samples per frame at 44.1 kHz.
+    let expected = 400.0 * 44_100.0 / 60.0988;
+    let ratio = samples.len() as f32 / expected;
+    assert!(
+        (0.98..1.02).contains(&ratio),
+        "unexpected APU sample count: {} ({ratio:.3}x expected) - APU may be stepped twice or not at all",
+        samples.len()
+    );
 }

@@ -11,23 +11,30 @@ mod tests {
     use crate::cpu::CPU;
 
     /// Minimal bus implementation for testing timing logic.
+    ///
+    /// `cycles` must advance on every access/tick: `CPU::step` relies on
+    /// `cpu_cycles()` to know how much of the instruction's budget is spent.
     struct DummyBus {
         mem: [u8; 65536],
         cpu_pc: u16,
+        cycles: u64,
     }
     impl DummyBus {
         fn new() -> Self {
             Self {
                 mem: [0; 65536],
                 cpu_pc: 0,
+                cycles: 0,
             }
         }
     }
     impl BusInterface for DummyBus {
         fn read(&mut self, addr: u16) -> u8 {
+            self.cycles += 1;
             self.mem[addr as usize]
         }
         fn write(&mut self, addr: u16, data: u8) {
+            self.cycles += 1;
             self.mem[addr as usize] = data;
         }
         fn set_cpu_pc(&mut self, pc: u16) {
@@ -37,7 +44,11 @@ mod tests {
             0
         }
         fn tick(&mut self) -> bool {
+            self.cycles += 1;
             false
+        }
+        fn cpu_cycles(&self) -> u64 {
+            self.cycles
         }
     }
 
