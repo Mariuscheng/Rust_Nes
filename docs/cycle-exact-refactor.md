@@ -88,6 +88,13 @@
   三個 CPU cycle 都算「set」；讀 `$4015` 清掉後，同窗口後續的 set 會再把它拉起來，
   所以 29832 讀完、29836 再讀仍為 set；29833 讀完則不會再 set。
 
+  **已試過、會撞牆的做法**：把 IRQ 事件從 29830 移到 29831 並加上 3-cycle 窗口，
+  測項 6 的 check #2 就過了，但測項 4 `4-jitter` 立刻變成 "Frame irq is set too late"
+  ——jitter 測項把絕對時間釘在 29830。兩者要同時成立，frame IRQ 必須**依 `$4017`
+  寫入的 cycle 奇偶**落在不同絕對 cycle（±1），所以下一步要先讀
+  `apu_test/source/4-jitter.s` 與 `common/sync_apu.s`，把「寫入相位 → IRQ 絕對
+  cycle」的對應表建出來，而不是再調一個全域常數。
+
 ## 6. 風險
 
 - **P1 會動到所有 opcode 的執行路徑**：任何一個 handler 少 tick 或多 tick，都會讓
