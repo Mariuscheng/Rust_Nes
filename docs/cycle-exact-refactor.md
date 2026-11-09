@@ -129,7 +129,28 @@
 cycle 的哪個 dot」用實驗釘死（例如在 ROM 裏用 $2001 渲染開關抓 dot），不要再用
 全域常數試誤。
 
-## 7. 風險
+## 7. 交接：剩下三個測項要怎麼查
+
+`ppu_vbl_nmi` 7、`cpu_interrupts` 2、`3-nmi_and_irq` 都只剩 1–5 個 CPU clock 的差距，
+而且方向不一致（前者有的列偏早、後者偏晚），所以不能再靠全域常數試誤。建議的順序：
+
+1. **先量測，不改程式**：在 `MainBus::tick()` 加一個只在 `TRACE` 環境變數開啟的
+   環形緩衝區，記錄每個 cycle 的 `(cpu_cycle, abs_dot, nmi_interrupt, irq_asserted,
+   poll_iface)`；在 `nes.rs` 每次派發中斷時把最近 16 筆 dump 出來。拿
+   `cpu_interrupts` 測項 2 的**最後一列**（預期 `27 36 00`）與 `3-nmi_and_irq` 的
+   **第 5–9 列**（預期 `20 00`）逐 cycle 對照，先確定「硬體在哪個 dot 看到邊緣」。
+2. **再改模型**：目前 `nmi_edge_seen_prev` 與 `irq_asserted_before_tick(0)` 名義上
+   是同一個瞬間，但兩者的更新點其實差一個 tick 的尾巴；trace 會直接顯示是哪一個
+   偏了。可能的修法是讓 NMI 也帶上「邊緣發生的 dot offset」，而不是只有邊緣旗標。
+3. **不要重做**已驗證失敗的四個變體（§6）。
+
+另一個尚未驗證的線索：`sync_vbl_delay(A)` 的 A 每列 +1，但 CPU 只能以 cycle 為單位
+動作，所以每列在我們的模型裡可能只對應 1/3 個 CPU cycle 的位移；若 trace 顯示相鄰
+兩列的 cycle 完全相同，就代表測試在我們的時基上根本沒有解析度——那就要先確認
+`sync_vbl_delay` 在我們的 CPU 上實際花了幾個 cycle（用 trace 數），而不是假設它
+等於硬體。
+
+## 8. 風險
 
 - **P1 會動到所有 opcode 的執行路徑**：任何一個 handler 少 tick 或多 tick，都會讓
   `instr_timing`/golden 立刻抓到，所以是可回復的。
