@@ -180,7 +180,7 @@ fn apu_produces_audio() {
         samples.iter().all(|s| s.is_finite()),
         "APU produced non-finite samples"
     );
-    let peak = samples.iter().fold(0.0f32, |peak, s| s.max(s.abs()));
+    let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
     assert!(peak > 1e-4, "APU output is silent (peak {peak})");
 
     // One APU cycle per CPU cycle: ~735 samples per frame at 44.1 kHz.

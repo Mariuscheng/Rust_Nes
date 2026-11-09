@@ -200,12 +200,22 @@ impl MainBus {
     /// Called at boot and after every mapper-register write, so mid-frame CHR
     /// bank switching (MMC3, VRC6, MMC5) takes effect on the next tile fetch.
     /// CHR-RAM cartridges are skipped: the PPU owns that data.
+    ///
+    /// Only the 1 KiB blocks the mapper reports as dirty are copied. Mappers
+    /// that cannot narrow it down return 0xFF and get the old full refresh.
     pub fn refresh_chr(&mut self) {
         if self.mapper.has_chr_ram() {
             return;
         }
-        for i in 0..8192 {
-            self.ppu.chr_ram[i] = self.mapper.read_chr(i as u16);
+        let dirty = self.mapper.take_chr_dirty_blocks();
+        for block in 0..8 {
+            if dirty & (1 << block) == 0 {
+                continue;
+            }
+            let base = block * 1024;
+            for i in 0..1024 {
+                self.ppu.chr_ram[base + i] = self.mapper.read_chr((base + i) as u16);
+            }
         }
     }
 
@@ -499,9 +509,20 @@ mod tests {
 
     #[test]
     fn chr_refreshes_after_mapper_register_write() {
+        let mut bus = mmc3_test_bus();
+        bus.refresh_chr();
+        assert_eq!(bus.ppu.chr_ram[0x1000], 0);
+
+        // MMC3 CHR mode 0: select CHR register 2, then point it at bank 5.
+        bus.write(0x8000, 2);
+        bus.write(0x8001, 5);
+        assert_eq!(bus.ppu.chr_ram[0x1000], 5);
+    }
+
+    /// 16 KB CHR-ROM where 1 KB bank `k` is filled with byte `k`.
+    fn mmc3_test_bus() -> MainBus {
         use crate::rom::mappers::Mapper4;
 
-        // 16 KB CHR-ROM: 1 KB bank k is filled with byte k.
         let mut chr = Vec::with_capacity(16 * 1024);
         for bank in 0..16u8 {
             chr.extend(std::iter::repeat(bank).take(1024));
@@ -512,20 +533,41 @@ mod tests {
             Mirroring::HORIZONTAL,
             false,
         ));
-        let mut bus = MainBus::new(
+        MainBus::new(
             mapper,
             Ram::new(),
             PPU::new(Mirroring::HORIZONTAL),
             Joypad::new(),
             Joypad::new(),
             APU::new(44_100),
-        );
-        bus.refresh_chr();
-        assert_eq!(bus.ppu.chr_ram[0x1000], 0);
+        )
+    }
 
-        // MMC3 CHR mode 0: select CHR register 2, then point it at bank 5.
+    #[test]
+    fn chr_refresh_only_copies_banks_a_write_can_touch() {
+        let mut bus = mmc3_test_bus();
+        bus.refresh_chr();
+
+        // Poke both halves of the pattern table. A real copy overwrites the
+        // pokes, so they double as a marker for "did this write refresh?".
+        bus.ppu.chr_ram[0x0000] = 0xAA;
+        bus.ppu.chr_ram[0x1000] = 0xAA;
+
+        // IRQ latch / reload / enable never change CHR banks: no copy at all.
+        bus.write(0xC000, 0x10);
+        bus.write(0xC001, 0);
+        bus.write(0xE001, 0);
+        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
+        assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
+
+        // Selecting a register changes nothing by itself.
         bus.write(0x8000, 2);
+        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
+        assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
+
+        // R2 feeds $1000-$1FFF, so only that half is re-copied.
         bus.write(0x8001, 5);
         assert_eq!(bus.ppu.chr_ram[0x1000], 5);
+        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
     }
 }

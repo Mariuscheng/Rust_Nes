@@ -45,6 +45,14 @@ pub trait Mapper {
     fn tick_mapper_irq(&mut self) -> bool {
         false
     }
+    /// 自上次呼叫以來，哪些 1 KiB CHR bank（bit i = $0000 + i*$400）的內容可能改變。
+    ///
+    /// 回傳 0xFF 代表「不確定，全部重抄」，這是預設值，所以 mapper 不實作也不會錯，
+    /// 只是每次 register 寫入都要重抄 8 KiB。實作的 mapper 可以把不影響 CHR 的寫入
+    /// （IRQ latch、mirroring、PRG bank 等）標成 0，讓 mid-frame 的熱路徑免去重抄。
+    fn take_chr_dirty_blocks(&mut self) -> u8 {
+        0xFF
+    }
     /// Serialize mapper-specific state to bytes for save states.
     fn save_state(&self) -> Vec<u8> {
         Vec::new()

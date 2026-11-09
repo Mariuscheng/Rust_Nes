@@ -82,7 +82,7 @@ src/
 ## 🧪 執行測試
 
 ```bash
-# 單元測試（快，19 個）
+# 單元測試（快，23 個）
 cargo test
 
 # blargg 測試 ROM 回歸套件（慢，需把 .nes 放在專案根目錄）
@@ -93,7 +93,8 @@ cargo test --release -- --ignored
 `apu_test` 目前是**已知時序問題**，測試會驗證失敗內容，等 cycle-accurate 核心完成後
 改成 `assert_pass` 即可。
 
-`golden_frames.txt` 是畫面 hash 回歸（Mario / 1942 / 1943 / MMC3 測試 ROM）。若變更是
+`golden_frames.txt` 是畫面 hash 回歸（Mario / 1942 / 1943 / Kirby's Adventure /
+MMC3 測試 ROM）。若變更是
 有意的，重新生成：
 
 ```bash
@@ -134,11 +135,19 @@ REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
 | MMC1 (1) | ✅ |
 | UxROM (2) | ✅ |
 | CNROM (3) | ✅ |
-| MMC3 (4) | ✅ IRQ 已實作；CHR bank 在 mapper 寫入後立即同步（支援 mid-frame 切換） |
-| MMC5 (5) | ✅ 基本功能 |
+| MMC3 (4) | ✅ IRQ 已實作；CHR bank 在 mapper 寫入後立即同步，且只重抄變動的 1 KiB block（支援 mid-frame 切換） |
+| MMC5 (5) | ⚠️ 部分：PRG/CHR 是線性映射；`$5120-$512B` CHR bank、ExRAM、scanline IRQ 尚未實作 |
 | AxROM (7) | ✅ |
 | VRC6 (24/26) | ✅ |
 | FME-7 (69) | ✅ |
+
+CHR 同步的設計取捨與量測見 [`docs/chr-banking.md`](docs/chr-banking.md)。
+
+## 📚 設計文件
+
+- [`docs/chr-banking.md`](docs/chr-banking.md) — CHR bank 切換：refresh-on-write 與 dirty block 最佳化
+- [`docs/timing-refactor-step1.md`](docs/timing-refactor-step1.md) — per-access ticking 重構進度
+- [`docs/nmi-timing-design.md`](docs/nmi-timing-design.md) — NMI 取樣／延遲的設計與實驗
 
 ## 📝 License
 

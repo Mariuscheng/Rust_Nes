@@ -18,6 +18,9 @@ pub struct Mapper4 {
     irq_enable: bool,
     irq_reload: bool,
     prg_ram: [u8; 8192],
+    /// Bit i set = 1 KiB CHR block i may have changed (see `take_chr_dirty_blocks`).
+    /// Starts at 0xFF so the boot-time refresh copies all of CHR.
+    chr_dirty: u8,
 }
 
 impl Mapper4 {
@@ -40,6 +43,7 @@ impl Mapper4 {
             irq_enable: false,
             irq_reload: false,
             prg_ram: [0; 8192],
+            chr_dirty: 0xFF,
         };
         if battery {
             super::super::mapper::load_battery_save("mmc3", &mut mapper.prg_ram);
@@ -132,11 +136,26 @@ impl Mapper for Mapper4 {
             }
             0x8000..=0x9FFF => {
                 if addr & 0x0001 == 0 {
+                    let chr_mode = (data >> 7) & 1;
+                    if chr_mode != self.chr_mode {
+                        // The two 4 KiB windows swap, so every 1 KiB block remaps.
+                        self.chr_dirty = 0xFF;
+                    }
                     self.bank_select = data & 0x07;
                     self.prg_mode = (data >> 6) & 1;
-                    self.chr_mode = (data >> 7) & 1;
+                    self.chr_mode = chr_mode;
                 } else {
                     self.bank_regs[self.bank_select as usize] = data;
+                    // R0/R1 drive one 4 KiB half of the pattern table and R2..R5
+                    // the other; chr_mode decides which half is where.
+                    let half = if self.bank_select <= 1 {
+                        if self.chr_mode == 0 { 0x0F } else { 0xF0 }
+                    } else if self.chr_mode == 0 {
+                        0xF0
+                    } else {
+                        0x0F
+                    };
+                    self.chr_dirty |= half;
                 }
             }
             0xA000..=0xBFFF => {
@@ -164,6 +183,10 @@ impl Mapper for Mapper4 {
 
     fn has_chr_ram(&self) -> bool {
         self.chr_rom.is_empty()
+    }
+
+    fn take_chr_dirty_blocks(&mut self) -> u8 {
+        std::mem::take(&mut self.chr_dirty)
     }
 
     fn tick_mapper_irq(&mut self) -> bool {
@@ -216,5 +239,7 @@ impl Mapper for Mapper4 {
         if data.len() >= off + 8192 {
             self.prg_ram.copy_from_slice(&data[off..off + 8192]);
         }
+        // Restored banks may differ from what the PPU holds; force a full copy.
+        self.chr_dirty = 0xFF;
     }
 }

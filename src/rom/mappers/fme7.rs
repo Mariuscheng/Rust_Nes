@@ -19,6 +19,8 @@ pub struct Fme7 {
     irq_latch: u16,
     irq_enable: bool,
     irq_cycle_mode: bool,
+    /// Bit i set = 1 KiB CHR block i may have changed (see `take_chr_dirty_blocks`).
+    chr_dirty: u8,
 }
 
 impl Fme7 {
@@ -34,6 +36,7 @@ impl Fme7 {
             irq_latch: 0,
             irq_enable: false,
             irq_cycle_mode: false,
+            chr_dirty: 0xFF,
         };
         if battery {
             super::super::mapper::load_battery_save("fme7", &mut mapper.prg_ram);
@@ -94,6 +97,8 @@ impl Mapper for Fme7 {
                 match self.command {
                     0..=7 => {
                         self.banks[self.command as usize] = data;
+                        // Command n feeds 1 KiB CHR block n; nothing else moves.
+                        self.chr_dirty |= 1 << self.command;
                     }
                     8 => {
                         // Mirroring (not implemented fully here)
@@ -130,6 +135,10 @@ impl Mapper for Fme7 {
 
     fn has_chr_ram(&self) -> bool {
         self.has_chr_ram
+    }
+
+    fn take_chr_dirty_blocks(&mut self) -> u8 {
+        std::mem::take(&mut self.chr_dirty)
     }
 
     fn tick_mapper_irq(&mut self) -> bool {
@@ -193,5 +202,39 @@ impl Mapper for Fme7 {
         if data.len() >= off + 8192 {
             self.prg_ram.copy_from_slice(&data[off..off + 8192]);
         }
+        // Restored banks may differ from what the PPU holds; force a full copy.
+        self.chr_dirty = 0xFF;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mapper() -> Fme7 {
+        Fme7::new(vec![0u8; 0x8000], vec![0u8; 16 * 1024], false, false)
+    }
+
+    #[test]
+    fn chr_dirty_marks_only_the_bank_a_write_touches() {
+        let mut m = mapper();
+        assert_eq!(
+            m.take_chr_dirty_blocks(),
+            0xFF,
+            "boot refresh must copy all of CHR"
+        );
+
+        // Command 3 selects CHR 1 KiB block 3 — and nothing else.
+        m.write_prg(0x8000, 3);
+        assert_eq!(m.take_chr_dirty_blocks(), 0, "latch alone moves no banks");
+        m.write_prg(0xA000, 9);
+        assert_eq!(m.take_chr_dirty_blocks(), 1 << 3);
+
+        // IRQ latch / control commands leave the pattern table alone.
+        m.write_prg(0x8000, 9);
+        m.write_prg(0xA000, 0x20);
+        m.write_prg(0x8000, 0x0B);
+        m.write_prg(0xA000, 0x01);
+        assert_eq!(m.take_chr_dirty_blocks(), 0);
     }
 }

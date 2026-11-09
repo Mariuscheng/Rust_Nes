@@ -35,6 +35,8 @@ pub struct Vrc6 {
     saw_timer: u16,
     saw_divider: u16,
     saw_enabled: bool,
+    /// Bit i set = 1 KiB CHR block i may have changed (see `take_chr_dirty_blocks`).
+    chr_dirty: u8,
 }
 
 impl Vrc6 {
@@ -71,6 +73,7 @@ impl Vrc6 {
             saw_timer: 0,
             saw_divider: 0,
             saw_enabled: false,
+            chr_dirty: 0xFF,
         }
     }
 
@@ -122,6 +125,11 @@ impl Mapper for Vrc6 {
     }
 
     fn write_prg(&mut self, addr: u16, data: u8) {
+        // Only $D000-$EFFF select CHR banks; everything else here is PRG,
+        // mirroring, audio, or IRQ control and leaves the pattern table alone.
+        if (0xD000..=0xEFFF).contains(&addr) {
+            self.chr_dirty = 0xFF;
+        }
         match addr {
             0x8000..=0x8003 => {
                 self.prg_bank0 = data & 0x0F;
@@ -153,6 +161,10 @@ impl Mapper for Vrc6 {
 
     fn has_chr_ram(&self) -> bool {
         self.has_chr_ram
+    }
+
+    fn take_chr_dirty_blocks(&mut self) -> u8 {
+        std::mem::take(&mut self.chr_dirty)
     }
 
     fn tick_mapper_irq(&mut self) -> bool {
@@ -243,5 +255,7 @@ impl Mapper for Vrc6 {
         self.irq_enable = data[off] != 0;
         off += 1;
         self.irq_mode = data[off] != 0;
+        // Restored banks may differ from what the PPU holds; force a full copy.
+        self.chr_dirty = 0xFF;
     }
 }

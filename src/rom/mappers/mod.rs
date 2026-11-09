@@ -74,6 +74,10 @@ impl MapperVariant {
         delegate!(self, tick_mapper_irq)
     }
 
+    pub fn take_chr_dirty_blocks(&mut self) -> u8 {
+        delegate!(self, take_chr_dirty_blocks)
+    }
+
     pub fn save_state(&self) -> Vec<u8> {
         delegate!(self, save_state)
     }
