@@ -147,8 +147,8 @@ fn ppu_vbl_nmi_known_set_time_failure() {
 
 #[test]
 #[ignore = "ROM suite is slow; run: cargo test --release -- --ignored"]
-fn apu_test_known_len_timing_failure() {
-    assert_known_failure("apu_test.nes", 6_000, "5 of 8");
+fn apu_test_known_irq_flag_timing_failure() {
+    assert_known_failure("apu_test.nes", 6_000, "6 of 8");
 }
 
 #[test]

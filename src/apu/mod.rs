@@ -17,6 +17,22 @@ use self::noise::NoiseChannel;
 use self::pulse::PulseChannel;
 use self::triangle::TriangleChannel;
 
+/// Frame counter event thresholds, counted in CPU cycles after a `$4017` write.
+///
+/// `[q1, q2, q3, q4, h1, h2, irq, reset, s5_last]`
+///
+/// - `q1..q4`: quarter-frame clocks (envelope, linear counter)
+/// - `h1, h2`: half-frame clocks (length counters, sweep)
+/// - `irq`: 4-step frame IRQ
+/// - `reset`: frame counter wraps back to 0
+/// - `s5_last`: 5-step final quarter+half+reset
+///
+/// These values are calibrated against blargg's `apu_test` and are the single
+/// place to tune frame-counter timing.
+const FRAME_EVENTS: [i64; 9] = [
+    7457, 14913, 22371, 29829, 14913, 29829, 29830, 29830, 37281,
+];
+
 /// NES APU（Audio Processing Unit）
 ///
 /// 整合五個音頻通道與 frame counter，
@@ -39,6 +55,8 @@ pub struct APU {
     /// and the final combined event resets back to -1, keeping the sequence
     /// length at 29830 ticks.
     frame_step_offset: i64,
+    /// True until the first frame-counter reset after a $4017 write.
+    frame_first_sequence: bool,
     sample_accumulator: u64,
     cycles_per_sample_numer: u64,
     audio_buffer: Vec<f32>,
@@ -63,6 +81,7 @@ impl APU {
             dmc_interrupt: false,
             frame_step: 0,
             frame_step_offset: 0,
+            frame_first_sequence: false,
             sample_accumulator: 0,
             cycles_per_sample_numer: sample_rate as u64,
             audio_buffer: Vec::with_capacity(sample_rate as usize / 60 + 32),
@@ -151,6 +170,7 @@ impl APU {
                 //             序列延後 2 個 tick（跳過一個 clock）。
                 self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 { 0 } else { -2 };
                 self.frame_step = self.frame_step_offset;
+                self.frame_first_sequence = true;
                 // mode 1 ($80)：寫入後立刻觸發一次 quarter + half，
                 // 發生在 sequencer 重置之後，不計入 frame_step。
                 if self.frame_mode == 1 {
@@ -214,49 +234,56 @@ impl APU {
 
     /// 每個 CPU cycle 呼叫一次，推進 frame counter。
     ///
-    /// Even jitter (offset = 0) 與 odd jitter (offset = -2) 共用相同的事件閾值。
-    /// Frame counter 以 2-cycle 網格推進；寫入若落在兩個 clock 之間，會整整
-    /// 跳過一個 clock，因此 odd 相位的第一個序列長 29832 ticks，之後恢復
-    /// 29830 ticks 的穩態週期。
+    /// 事件門檻集中在 [`FRAME_EVENTS`]，方便用測試 ROM 校準：
+    /// quarter 在 q1..q4、half（length/sweep）在 h1/h2、4-step 的 IRQ 與 reset
+    /// 分別在 irq/reset、5-step 的收尾在 s5_last。
     ///
-    ///   4-step mode: 29830 ticks per steady-state sequence (IRQ at step 29830)
-    ///   5-step mode: 37281 ticks per sequence
+    /// Even jitter（offset 0）與 odd jitter（offset -2）共用同一組門檻；
+    /// odd 相位的第一段序列會多 2 個 tick，之後恢復穩態週期。
     fn frame_counter_tick(&mut self) {
         self.frame_step += 1;
+        let s = self.frame_step;
 
-        // ── 共用事件閾值 ──
-        match self.frame_step {
-            7457 => self.clock_quarter_frame(),
-            14913 => {
-                self.clock_quarter_frame();
-                self.clock_half_frame();
+        // The first sequence after a $4017 write is phase-shifted by three
+        // CPU cycles (the write lands inside the APU's 2-cycle grid); later
+        // sequences run at the nominal period.
+        let shift = if self.frame_first_sequence { 3 } else { 0 };
+
+        if s == FRAME_EVENTS[0]
+            || s == FRAME_EVENTS[1]
+            || s == FRAME_EVENTS[2]
+            || s == FRAME_EVENTS[3]
+        {
+            self.clock_quarter_frame();
+        }
+        if s == FRAME_EVENTS[4] + shift {
+            self.clock_half_frame();
+        }
+        // In 5-step mode the second half-frame clock does not happen; the
+        // final one comes with the sequence reset at s5_last.
+        if self.frame_mode == 0 && s == FRAME_EVENTS[5] + shift {
+            self.clock_half_frame();
+        }
+
+        if self.frame_mode == 0 {
+            if s == FRAME_EVENTS[6] && !self.frame_irq_inhibit {
+                self.frame_interrupt = true;
             }
-            22371 => self.clock_quarter_frame(),
-            29829 => {
-                // quarter + half always happens at 29829 (both jitter phases).
-                self.clock_quarter_frame();
-                self.clock_half_frame();
-            }
-            29830 => {
-                // 4-step only: IRQ and reset happen one step later, so the odd
-                // phase (offset -1) lands one CPU cycle after the even phase.
-                if self.frame_mode == 0 {
-                    if !self.frame_irq_inhibit {
-                        self.frame_interrupt = true;
-                    }
-                    // The 1-cycle jitter only affects the first sequence after
-                    // the $4017 write; steady-state sequences are 29830 cycles.
-                    self.frame_step = 0;
-                }
-                // Mode 1 (5-step): no IRQ, no reset here.
-            }
-            37281 => {
-                // 5-step mode: last quarter+half+reset
-                self.clock_quarter_frame();
-                self.clock_half_frame();
+            if s == FRAME_EVENTS[7] + shift {
                 self.frame_step = 0;
+                self.frame_first_sequence = false;
             }
-            _ => {}
+        } else {
+            if s == FRAME_EVENTS[8] + shift {
+                // 5-step mode: final quarter+half...
+                self.clock_quarter_frame();
+                self.clock_half_frame();
+            }
+            // ...and the sequence reset one cycle later.
+            if s == FRAME_EVENTS[8] + shift + 1 {
+                self.frame_step = 0;
+                self.frame_first_sequence = false;
+            }
         }
     }
 

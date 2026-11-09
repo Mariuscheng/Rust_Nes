@@ -16,7 +16,7 @@
 | **1b** | ✅ `9f6fd30` | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
 | **1c** | ✅ `dbe5d19` | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
 | **1d** | ✅ `b11ed47` | `$4014` 只排入請求，指令結束後由 `run_dma()` 執行：CPU 停住 513/514 cycles（奇偶對齊），每 2 cycles 搬一個 OAM byte，期間 PPU/APU 照常推進。 |
-| **1e** | 🚧 進行中 | 中斷取樣移到倒數第二 cycle（`nmi_line_before_tick` / `irq_asserted_before_tick`）；frame counter jitter 修正：quarter/half 固定在 step 29829、IRQ+reset 移到 step 29830，`$4017` odd 寫入延後 2 cycles。 |
+| **1e** | 🚧 進行中 | 中斷取樣移到倒數第二 cycle；frame counter：門檻集中到 `FRAME_EVENTS`、第一段序列 +3 cycle、5-step 修正。`apu_test` 已通過 test 1–5，現在卡在 test 6。 |
 
 **1b 觀測**
 
@@ -60,6 +60,23 @@
   test 5 `5-len_timing`（「First length of mode 0 is too soon」，Failed #2）。
 - 單元測試同步更新：odd jitter 的第一段序列是 29832 ticks。
 - 效能：2.2–2.6 ms/frame（量測當下系統負載 36%，波動較大）。
+
+**1e 觀測（第二輪：長度計時）**
+
+- 把 frame counter 的所有門檻集中成 `FRAME_EVENTS`
+  （`[q1..q4, h1, h2, irq, reset, s5_last]`），並用自動化掃描（24 組 + 6 組）
+  以 `apu_test` 的失敗點當 fitness 校準。
+- 掃描結論：
+  - IRQ 必須維持在 step 29830；移到 29831 以上會讓 `4-jitter` 的 test 3 變成 too late。
+  - 第一段序列（`$4017` 寫入後）的 half-frame 時鐘要延後 **3** 個 cycle
+    （14916 / 29832），穩態序列則用名目值（14913 / 29829）。
+  - 5-step 模式在 29829 **沒有** half-frame 時鐘；最後一個 half 在 37281，
+    reset 再晚 1 cycle。
+- 結果：`apu_test` 的 test 1–5 全部通過（`5-len_timing` 從 Failed #2 → 通過），
+  失敗點推進到 test 6 `6-irq_flag_timing`
+  （「Flag first set too soon」：IRQ 早 1 cycle，但把它延後會破壞 `4-jitter`，
+  需要下一輪處理 reset 與 IRQ 的相對順序）。
+- golden、其他 ROM 測試不變。
 
 ---
 
