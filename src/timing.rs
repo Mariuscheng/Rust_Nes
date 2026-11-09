@@ -195,6 +195,45 @@ mod tests {
         );
     }
 
+    /// Locks the set of opcodes whose internal cycles legitimately sit at the
+    /// end of the instruction (2-cycle implied ops, taken branches, RTS/RTI…).
+    /// If a future change misplaces an access, an opcode joins or leaves this
+    /// list and the test fails instead of the cycle being silently padded.
+    #[test]
+    fn trailing_padding_only_for_known_instructions() {
+        const EXPECTED: &[u8] = &[
+            0x0A, 0x10, 0x13, 0x18, 0x1A, 0x2A, 0x33, 0x38, 0x3A, 0x40, 0x4A, 0x50, 0x53, 0x58,
+            0x5A, 0x60, 0x6A, 0x73, 0x78, 0x7A, 0x88, 0x8A, 0x90, 0x98, 0x9A, 0xA8, 0xAA, 0xB0,
+            0xB8, 0xBA, 0xC8, 0xCA, 0xD0, 0xD3, 0xD8, 0xDA, 0xDE, 0xE8, 0xEA, 0xF0, 0xF3, 0xF8,
+            0xFA, 0xFE,
+        ];
+
+        let mut padded = Vec::new();
+        for opcode in 0u16..=0xFF {
+            let mut used_padding = false;
+            for flags in [0x24u8, 0x27] {
+                let mut cpu = CPU::new();
+                let mut bus = DummyBus::new();
+                bus.mem[0] = opcode as u8;
+                bus.mem[1] = 0x02;
+                cpu.pc = 0;
+                cpu.p = flags;
+                let _ = cpu.step(&mut bus);
+                if cpu.padded[opcode as usize] {
+                    used_padding = true;
+                }
+            }
+            if used_padding {
+                padded.push(opcode as u8);
+            }
+        }
+        assert_eq!(
+            padded, EXPECTED,
+            "the set of opcodes relying on trailing padding changed; check the \
+             cycle placement of the ones that moved"
+        );
+    }
+
     /// Diagnostic: run every opcode once and list those whose internal cycles
     /// are still trailing padding (i.e. not placed at their hardware cycle).
     ///
@@ -227,6 +266,8 @@ mod tests {
             }
         }
         eprintln!("--- {} opcodes use trailing padding ---", report.len());
+        let csv: Vec<String> = report.iter().map(|(op, _, _)| format!("{op:02X}")).collect();
+        eprintln!("PADLIST: {}", csv.join(","));
         let mut line = String::new();
         for (op, a, b) in &report {
             line.push_str(&format!("{op:02X}({a}/{b}) "));
