@@ -9,6 +9,7 @@ savestate.dat
 
 # ROM images (not redistributable — put your own .nes files here)
 *.nes
+*.zip
 
 # Local review artefacts (screenshots of test ROM output, etc.)
 /_shots/
