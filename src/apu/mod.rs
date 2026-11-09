@@ -146,9 +146,10 @@ impl APU {
                     self.frame_interrupt = false;
                 }
                 // 依照寫入當下的 CPU cycle 奇偶決定 jitter 模式。
-                // Even cycle: offset=0，從 1 開始計數。
-                // Odd cycle:  offset=-1，第一個 tick 變 0（skip），後續事件全部延遲 1 tick。
-                self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 { 0 } else { -1 };
+                // Even cycle: offset=0，下一個 tick 就開始計數。
+                // Odd cycle:  offset=-2，寫入落在 2-cycle 網格之間，整個第一段
+                //             序列延後 2 個 tick（跳過一個 clock）。
+                self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 { 0 } else { -2 };
                 self.frame_step = self.frame_step_offset;
                 // mode 1 ($80)：寫入後立刻觸發一次 quarter + half，
                 // 發生在 sequencer 重置之後，不計入 frame_step。
@@ -213,12 +214,12 @@ impl APU {
 
     /// 每個 CPU cycle 呼叫一次，推進 frame counter。
     ///
-    /// Even jitter (offset=0) 與 odd jitter (offset=-1) 共用相同的事件閾值。
-    /// Odd jitter 因為從 -1 開始，第一個 tick 變 0（跳過，無事件），
-    /// 後續所有事件因此延遲 1 個 tick。最後在 29829 合併 half/IRQ/reset
-    /// 並回到 offset，維持總長 29830 ticks。
+    /// Even jitter (offset = 0) 與 odd jitter (offset = -2) 共用相同的事件閾值。
+    /// Frame counter 以 2-cycle 網格推進；寫入若落在兩個 clock 之間，會整整
+    /// 跳過一個 clock，因此 odd 相位的第一個序列長 29832 ticks，之後恢復
+    /// 29830 ticks 的穩態週期。
     ///
-    ///   4-step mode: 29830 ticks per sequence
+    ///   4-step mode: 29830 ticks per steady-state sequence (IRQ at step 29830)
     ///   5-step mode: 37281 ticks per sequence
     fn frame_counter_tick(&mut self) {
         self.frame_step += 1;
@@ -232,38 +233,28 @@ impl APU {
             }
             22371 => self.clock_quarter_frame(),
             29829 => {
-                // quarter + half always happens at 29829
+                // quarter + half always happens at 29829 (both jitter phases).
                 self.clock_quarter_frame();
                 self.clock_half_frame();
-                if self.frame_mode == 0 {
-                    if self.frame_step_offset == 0 {
-                        // Even jitter: IRQ 與 reset 推遲到下一 tick (29830)
-                        // → on tick 29830, frame_step == 29830 處理
-                    } else {
-                        // Odd jitter: 合併 half/IRQ/reset 在同一 tick
-                        if !self.frame_irq_inhibit {
-                            self.frame_interrupt = true;
-                        }
-                        self.frame_step = self.frame_step_offset;
-                    }
-                }
-                // Mode 1 (5-step): 不在此 reset，繼續等待 37281
             }
             29830 => {
-                if self.frame_mode == 0 && self.frame_step_offset == 0 {
-                    // Even jitter only: standalone IRQ + reset
+                // 4-step only: IRQ and reset happen one step later, so the odd
+                // phase (offset -1) lands one CPU cycle after the even phase.
+                if self.frame_mode == 0 {
                     if !self.frame_irq_inhibit {
                         self.frame_interrupt = true;
                     }
-                    self.frame_step = self.frame_step_offset;
+                    // The 1-cycle jitter only affects the first sequence after
+                    // the $4017 write; steady-state sequences are 29830 cycles.
+                    self.frame_step = 0;
                 }
-                // Odd jitter 不會到達此處（已在 29829 reset 回 -1）
+                // Mode 1 (5-step): no IRQ, no reset here.
             }
             37281 => {
                 // 5-step mode: last quarter+half+reset
                 self.clock_quarter_frame();
                 self.clock_half_frame();
-                self.frame_step = self.frame_step_offset;
+                self.frame_step = 0;
             }
             _ => {}
         }
@@ -852,24 +843,24 @@ mod tests {
 
     #[test]
     fn apu_frame_counter_odd_jitter_sequence_length() {
-        // Verify that odd jitter (offset=-1) 4-step sequence wraps at
-        // 29830 ticks total (first tick skips count: -1→0, IRQ+half merged at 29829).
+        // Odd jitter (offset = -2): a write that lands between APU clocks skips
+        // one full clock, so the first sequence is 29832 ticks long and the
+        // steady-state period stays 29830.
         let mut apu = APU::new(44100);
         apu.frame_mode = 0;
-        apu.frame_step_offset = -1;
-        apu.frame_step = -1;
+        apu.frame_step_offset = -2;
+        apu.frame_step = -2;
         apu.frame_irq_inhibit = false;
 
-        // 29829 ticks: step goes -1 → 29828 (stops at 29828, no trigger)
-        for _ in 0..29829 {
+        for _ in 0..29831 {
             let _ = apu.tick_one();
         }
-        assert_eq!(apu.frame_step, 29828);
+        assert_eq!(apu.frame_step, 29829);
         assert!(!apu.frame_interrupt);
 
-        // 29830th tick: step → 29829, triggers quarter+half+IRQ, resets to -1
+        // 29832nd tick: step → 29830: IRQ + reset to the steady-state phase.
         let _ = apu.tick_one();
-        assert_eq!(apu.frame_step, -1);
+        assert_eq!(apu.frame_step, 0);
         assert!(apu.frame_interrupt);
     }
 

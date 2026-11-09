@@ -36,6 +36,17 @@ pub trait BusInterface {
     fn nmi_line(&self) -> bool {
         false
     }
+
+    /// NMI line state just before the most recent tick, i.e. the state the
+    /// 6502 samples on the penultimate cycle of the current instruction.
+    fn nmi_line_before_tick(&self) -> bool {
+        false
+    }
+
+    /// IRQ line state just before the most recent tick (same sampling point).
+    fn irq_asserted_before_tick(&self) -> bool {
+        false
+    }
 }
 
 pub struct MainBus {
@@ -52,6 +63,10 @@ pub struct MainBus {
     open_bus_latch: u8,
     /// PPU NMI line state, refreshed by `tick()`.
     nmi_line: bool,
+    /// NMI/IRQ line state sampled just before the most recent tick: this is
+    /// the penultimate-cycle state the 6502 uses to decide about interrupts.
+    nmi_before_tick: bool,
+    irq_before_tick: bool,
     /// Pending $4014 OAM DMA page, serviced after the current instruction.
     dma_request: Option<u8>,
 }
@@ -76,6 +91,8 @@ impl MainBus {
             cpu_cycle_count: 0,
             open_bus_latch: 0,
             nmi_line: false,
+            nmi_before_tick: false,
+            irq_before_tick: false,
             dma_request: None,
         }
     }
@@ -391,6 +408,9 @@ impl BusInterface for MainBus {
     }
 
     fn tick(&mut self) -> bool {
+        self.nmi_before_tick = self.nmi_line;
+        let irq = self.irq_asserted();
+        self.irq_before_tick = irq;
         self.cpu_cycle_count += 1;
         self.ppu.tick(3);
         self.clock_apu();
@@ -422,6 +442,14 @@ impl BusInterface for MainBus {
 
     fn nmi_line(&self) -> bool {
         self.nmi_line
+    }
+
+    fn nmi_line_before_tick(&self) -> bool {
+        self.nmi_before_tick
+    }
+
+    fn irq_asserted_before_tick(&self) -> bool {
+        self.irq_before_tick
     }
 }
 

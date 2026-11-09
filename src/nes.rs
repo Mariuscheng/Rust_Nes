@@ -116,17 +116,32 @@ impl NesConsole {
         //       The CPU is halted for 513/514 cycles while PPU and APU keep
         //       advancing, so NMI/IRQ raised during the transfer are seen at
         //       the next instruction boundary. ──
-        if let Some(page) = self.bus.take_dma_request() {
+        let dma_ran = if let Some(page) = self.bus.take_dma_request() {
             total_cpu_cycles += self.bus.run_dma(page);
-        }
+            true
+        } else {
+            false
+        };
 
         // ── 3. Interrupt dispatch (NMI first: it is not maskable) ──
-        self.cpu.set_nmi_line(self.bus.nmi_line());
+        // The 6502 samples the interrupt lines on the penultimate cycle of an
+        // instruction; `*_before_tick` is exactly that state. After a DMA the
+        // CPU was halted, so the live line state is the relevant one.
+        let (nmi_sample, irq_sample) = if dma_ran {
+            (self.bus.nmi_line(), self.bus.irq_asserted())
+        } else {
+            (
+                self.bus.nmi_line_before_tick(),
+                self.bus.irq_asserted_before_tick(),
+            )
+        };
+
+        self.cpu.set_nmi_line(nmi_sample);
         if self.cpu.poll_nmi() {
             let nc = self.cpu.nmi(&mut self.bus);
             total_cpu_cycles += nc;
             nmi_cycles_acc += nc;
-        } else if !self.cpu.skip_irq && self.bus.irq_asserted() && self.cpu.irq_pending() {
+        } else if !self.cpu.skip_irq && irq_sample && self.cpu.irq_pending() {
             self.cpu.irq(&mut self.bus);
             total_cpu_cycles += 7;
             irq_cycles_acc += 7;

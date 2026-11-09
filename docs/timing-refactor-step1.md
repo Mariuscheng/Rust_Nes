@@ -1,6 +1,6 @@
 # Step 1：把「時間」收斂成單一時鐘（per-access ticking）
 
-> 狀態：**1a–1d 已完成**（見 §0 進度），1e 待做。
+> 狀態：**1a–1d 已完成、1e 進行中**（見 §0 進度）。
 > 目標：讓每一次 CPU 匯流排存取都推進 1 個 CPU cycle（3 PPU dots + 1 APU cycle），
 > 取代現在「整條指令跑完再補 tick」的模型。
 > 這一階段**不做**完整 cycle-stepped CPU state machine；它先消除「暫存器存取相位」
@@ -15,8 +15,8 @@
 | **1a** | ✅ `a61257e` | `MainBus` 去 `RefCell`、`read`/`write` 改 `&mut`、新增 `tick()`。行為不變：golden 10/10 一致。 |
 | **1b** | ✅ `9f6fd30` | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
 | **1c** | ✅ `dbe5d19` | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
-| **1d** | ✅ 本次 | `$4014` 只排入請求，指令結束後由 `run_dma()` 執行：CPU 停住 513/514 cycles（奇偶對齊），每 2 cycles 搬一個 OAM byte，期間 PPU/APU 照常推進。 |
-| 1e | ⬜ | 中斷取樣精確化（移除 `skip_irq` 等近似） |
+| **1d** | ✅ `b11ed47` | `$4014` 只排入請求，指令結束後由 `run_dma()` 執行：CPU 停住 513/514 cycles（奇偶對齊），每 2 cycles 搬一個 OAM byte，期間 PPU/APU 照常推進。 |
+| **1e** | 🚧 進行中 | 中斷取樣移到倒數第二 cycle（`nmi_line_before_tick` / `irq_asserted_before_tick`）；frame counter jitter 修正：quarter/half 固定在 step 29829、IRQ+reset 移到 step 29830，`$4017` odd 寫入延後 2 cycles。 |
 
 **1b 觀測**
 
@@ -46,6 +46,20 @@
 - 新增單元測試 `oam_dma_is_queued_then_transfers_page`：驗證寫入只排隊、513/514 cycles、
   每 byte 正確搬移。
 - 效能：2.16 ms/frame。
+
+**1e 觀測（第一輪）**
+
+- 中斷取樣點改到倒數第二 cycle（bus 在每次 `tick()` 前記下 NMI/IRQ 狀態），
+  但 `cpu_interrupts` / `ppu_vbl_nmi` 的失敗子測試不變 —— 主因不在取樣點。
+- Frame counter 修正（實測校準，`apu_test` 當 oracle）：
+  - quarter/half 固定在 step 29829，IRQ + reset 移到 step 29830（原本 odd 相位
+    在 29829 就合併 IRQ，早了 1 cycle）。
+  - `$4017` 寫在 odd cycle 時，第一段序列延後 **2** 個 cycle（frame counter 跑在
+    2-cycle 網格上，寫入落在兩個 clock 之間會整整跳過一個 clock）；穩態週期仍是 29830。
+- `apu_test`：test 4（`4-jitter`）從 Failed #2 → **通過**，失敗點推進到
+  test 5 `5-len_timing`（「First length of mode 0 is too soon」，Failed #2）。
+- 單元測試同步更新：odd jitter 的第一段序列是 29832 ticks。
+- 效能：2.2–2.6 ms/frame（量測當下系統負載 36%，波動較大）。
 
 ---
 
