@@ -1,0 +1,18 @@
+# Rust build output
+/target/
+
+# Emulator save states and logs
+savestate.dat
+*.sav
+*.log
+*.rgb
+
+# ROM images (not redistributable — put your own .nes files here)
+*.nes
+
+# Local review artefacts (screenshots of test ROM output, etc.)
+/_shots/
+
+# Editor / tool backups
+*.ferrite-bak
+*.bak
