@@ -61,6 +61,8 @@ pub struct PPU {
     /// Absolute dot at which the VBL flag was last set. D1 of the dot-offset
     /// event model (docs/dot-offset-events.md): recorded, not yet used.
     pub vbl_set_dot: u32,
+    /// Absolute dot at which the VBL flag was last cleared (D1, recorded only).
+    pub vbl_clear_dot: u32,
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -139,6 +141,7 @@ impl PPU {
             prev_a12: false,
             vblank_just_set: false,
             vbl_set_dot: 0,
+            vbl_clear_dot: 0,
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,
