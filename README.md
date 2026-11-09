@@ -134,7 +134,7 @@ REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
 | MMC1 (1) | ✅ |
 | UxROM (2) | ✅ |
 | CNROM (3) | ✅ |
-| MMC3 (4) | ✅ IRQ 已實作；CHR bank 目前每幀同步一次 |
+| MMC3 (4) | ✅ IRQ 已實作；CHR bank 在 mapper 寫入後立即同步（支援 mid-frame 切換） |
 | MMC5 (5) | ✅ 基本功能 |
 | AxROM (7) | ✅ |
 | VRC6 (24/26) | ✅ |

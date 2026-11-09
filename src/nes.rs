@@ -54,7 +54,7 @@ impl NesConsole {
         cpu.reset(&mut bus);
 
         let last_ppu_frame = bus.ppu_frame();
-        let mut console = NesConsole {
+        let console = NesConsole {
             cpu,
             bus,
             last_ppu_frame,
@@ -66,7 +66,6 @@ impl NesConsole {
             timing_apu_stolen: 0,
             timing_step_count: 0,
         };
-        console.bus.sync_chr_to_ppu();
         console
     }
 
@@ -176,7 +175,6 @@ impl NesConsole {
             let current_frame = self.bus.ppu_frame();
             if current_frame != self.last_ppu_frame {
                 self.last_ppu_frame = current_frame;
-                self.bus.sync_chr_to_ppu();
                 self.invoke_frame_callback(current_frame);
                 return true;
             }

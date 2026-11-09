@@ -195,11 +195,12 @@ impl MainBus {
     // Mapper / CHR helpers
     // ══════════════════════════════════════════════
 
-    /// Sync CHR-ROM data to PPU chr_ram (bank switching may have changed).
+    /// Copy the mapper's CHR data into the PPU's pattern memory.
     ///
-    /// TODO: read CHR through the mapper at fetch time instead (mid-frame
-    /// bank switching support), then delete this copy.
-    pub fn sync_chr_to_ppu(&mut self) {
+    /// Called at boot and after every mapper-register write, so mid-frame CHR
+    /// bank switching (MMC3, VRC6, MMC5) takes effect on the next tile fetch.
+    /// CHR-RAM cartridges are skipped: the PPU owns that data.
+    pub fn refresh_chr(&mut self) {
         if self.mapper.has_chr_ram() {
             return;
         }
@@ -402,6 +403,8 @@ impl BusInterface for MainBus {
             }
             PRG_ROM_START..=0xFFFF => {
                 self.mapper.write_prg(addr, data);
+                // CHR banks may have changed mid-frame.
+                self.refresh_chr();
             }
             _ => {}
         }
@@ -492,5 +495,37 @@ mod tests {
         for i in 0..256usize {
             assert_eq!(bus.ppu.oam[i], i as u8, "OAM byte {i}");
         }
+    }
+
+    #[test]
+    fn chr_refreshes_after_mapper_register_write() {
+        use crate::rom::mappers::Mapper4;
+
+        // 16 KB CHR-ROM: 1 KB bank k is filled with byte k.
+        let mut chr = Vec::with_capacity(16 * 1024);
+        for bank in 0..16u8 {
+            chr.extend(std::iter::repeat(bank).take(1024));
+        }
+        let mapper = MapperVariant::Mapper4(Mapper4::new(
+            vec![0u8; 32 * 1024],
+            chr,
+            Mirroring::HORIZONTAL,
+            false,
+        ));
+        let mut bus = MainBus::new(
+            mapper,
+            Ram::new(),
+            PPU::new(Mirroring::HORIZONTAL),
+            Joypad::new(),
+            Joypad::new(),
+            APU::new(44_100),
+        );
+        bus.refresh_chr();
+        assert_eq!(bus.ppu.chr_ram[0x1000], 0);
+
+        // MMC3 CHR mode 0: select CHR register 2, then point it at bank 5.
+        bus.write(0x8000, 2);
+        bus.write(0x8001, 5);
+        assert_eq!(bus.ppu.chr_ram[0x1000], 5);
     }
 }
