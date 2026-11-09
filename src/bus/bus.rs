@@ -8,14 +8,15 @@ use crate::rom::MapperVariant;
 pub trait BusInterface {
     /// Read one byte from the bus.
     ///
-    /// Phase 1b of the timing refactor will advance the machine by one CPU
-    /// cycle here; for now the clock is still driven from `NesConsole::step`.
+    /// The machine advances one CPU cycle first, then the access happens —
+    /// hardware samples the bus at the end of the cycle.
     fn read(&mut self, addr: u16) -> u8;
 
-    /// Write one byte to the bus.
+    /// Write one byte to the bus (same cycle semantics as `read`).
     fn write(&mut self, addr: u16, data: u8);
 
-    /// Advance the machine by one CPU cycle (3 PPU dots + mapper IRQ clocking).
+    /// Advance the machine by one CPU cycle that performs no bus access
+    /// (the internal cycles of implied instructions, interrupt sequences…).
     /// Returns true when the PPU's NMI line is asserted.
     ///
     /// TODO(phase 1c): also step the APU by one cycle here.
@@ -25,24 +26,15 @@ pub trait BusInterface {
 
     fn take_immediate_stolen_cycles(&mut self) -> u16;
 
-    /// Advance PPU by 1 CPU cycle (3 PPU dots).
-    ///
-    /// TODO(phase 1e): call sites are replaced by `tick()`.
-    fn advance_ppu_cycle(&mut self) -> bool {
-        self.tick()
+    /// Number of CPU cycles elapsed so far (used by `CPU::step` to pad the
+    /// remaining cycles of an instruction).
+    fn cpu_cycles(&self) -> u64 {
+        0
     }
 
-    /// Advance PPU by `ticks` PPU dots (batch form).
-    ///
-    /// TODO(phase 1e): remove once every caller ticks per cycle.
-    fn advance_ppu_ticks(&mut self, ticks: u16) -> bool {
-        let mut result = false;
-        for _ in 0..ticks / 3 {
-            if self.advance_ppu_cycle() {
-                result = true;
-            }
-        }
-        result
+    /// Current state of the PPU NMI line.
+    fn nmi_line(&self) -> bool {
+        false
     }
 }
 
@@ -127,31 +119,10 @@ impl MainBus {
         self.ppu.frame
     }
 
-    /// Tick PPU for `cpu_cycles` CPU cycles (each = 3 PPU dots).
-    /// Returns the number of A12 rising edges detected; the caller decides
-    /// whether to clock the mapper IRQ for each of them.
-    pub fn tick_ppu_cycles(&mut self, cpu_cycles: u16) -> u8 {
-        self.cpu_cycle_count += cpu_cycles as u64;
-        self.ppu.tick(cpu_cycles.saturating_mul(3));
-        let count = self.ppu.a12_rising_count;
-        self.ppu.a12_rising_count = 0;
-        count
-    }
-
     /// Tick mapper IRQ once (MMC3 scanline counter on A12 edge).
     pub fn tick_mapper_irq(&mut self) {
         let irq = self.mapper.tick_mapper_irq();
         self.ppu.mapper_irq = irq;
-    }
-
-    /// Consume and return the NMI flag from PPU.
-    pub fn consume_nmi(&mut self) -> bool {
-        if self.ppu.nmi_interrupt {
-            self.ppu.nmi_interrupt = false;
-            true
-        } else {
-            false
-        }
     }
 
     /// Read the frame buffer into `buf`.
@@ -308,6 +279,7 @@ pub struct PpuSnapshot {
 
 impl BusInterface for MainBus {
     fn read(&mut self, addr: u16) -> u8 {
+        self.tick();
         match addr {
             0x0000..=0x1FFF => {
                 let val = self.ram.read(addr);
@@ -354,6 +326,7 @@ impl BusInterface for MainBus {
     }
 
     fn write(&mut self, addr: u16, data: u8) {
+        self.tick();
         self.open_bus_latch = data;
         match addr {
             0x0000..=0x1FFF => self.ram.write(addr, data),
@@ -432,5 +405,13 @@ impl BusInterface for MainBus {
         let dma = self.dma_stolen_cycles;
         self.dma_stolen_cycles = 0;
         dma
+    }
+
+    fn cpu_cycles(&self) -> u64 {
+        self.cpu_cycle_count
+    }
+
+    fn nmi_line(&self) -> bool {
+        self.nmi_line
     }
 }

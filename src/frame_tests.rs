@@ -102,6 +102,22 @@ fn checkpoints(rom: &str, frames: &[u64]) -> Option<Vec<GoldenEntry>> {
         console.step_frame();
         if frames.contains(&frame) {
             console.read_frame_buffer(&mut buffer);
+
+            // Optional image dump (PPM) for debugging golden mismatches:
+            // set DUMP_FRAMES=<dir> when running this test.
+            if let Some(dir) = std::env::var_os("DUMP_FRAMES") {
+                std::fs::create_dir_all(&dir).ok();
+                let mut ppm = Vec::with_capacity(256 * 240 * 3 + 20);
+                ppm.extend_from_slice(b"P6\n256 240\n255\n");
+                for &px in buffer.iter() {
+                    ppm.push(((px >> 16) & 0xFF) as u8);
+                    ppm.push(((px >> 8) & 0xFF) as u8);
+                    ppm.push((px & 0xFF) as u8);
+                }
+                let name = format!("{}/{}", dir.to_string_lossy(), rom);
+                std::fs::write(format!("{name}.{frame}.ppm"), &ppm).ok();
+            }
+
             entries.push(GoldenEntry {
                 rom: rom.to_string(),
                 frame,

@@ -97,9 +97,10 @@ impl NesConsole {
     /// Execute one CPU instruction and advance PPU/APU.
     /// The caller is responsible for handling frame boundaries.
     ///
-    /// NMI timing: On real 6502, NMI is sampled on the penultimate cycle
-    /// of each instruction. We simulate this by ticking PPU one CPU cycle
-    /// at a time and checking NMI on the penultimate cycle.
+    /// Every bus access advances the machine by one CPU cycle, so the PPU is in
+    /// the correct phase when the CPU touches its registers. Interrupts are
+    /// dispatched at instruction boundaries; the PPU drives the NMI line as a
+    /// level and the CPU edge-detects it.
     pub fn step(&mut self) {
         let mut total_cpu_cycles: u16 = 0;
         let mut instr_cycles: u16 = 0;
@@ -111,109 +112,29 @@ impl NesConsole {
         total_cpu_cycles += ic;
         instr_cycles += ic;
 
-        // ── 2. Tick remaining PPU cycles one at a time ──
-        // Some opcodes (BRK, IRQ) consume PPU cycles mid-instruction.
-        // We tick only the remaining cycles here.
-        let consumed_dots = self.cpu.ppu_ticks_consumed;
-        let total_dots = ic.saturating_mul(3);
-        let remaining_dots = total_dots.saturating_sub(consumed_dots);
-        let remaining_cpu_cycles = remaining_dots / 3;
-
-        let mut nmi_latched = false;
-        for i in 0..remaining_cpu_cycles {
-            let is_penultimate = i == remaining_cpu_cycles.saturating_sub(2);
-
-            // Tick one CPU cycle (3 PPU dots) through advance_ppu_cycle.
-            // This returns true if NMI was asserted during this cycle.
-            if self.bus.advance_ppu_cycle() {
-                self.cpu.set_nmi_line(true);
-            }
-
-            // On the penultimate cycle, sample NMI (as real 6502 does).
-            if is_penultimate {
-                if self.cpu.poll_nmi() {
-                    nmi_latched = true;
-                }
-            }
-
-            // Tick mapper IRQ for A12 edges that occurred during this cycle.
-            // advance_ppu_cycle already handles most A12 edges internally,
-            // but we also need to process any accumulated ones here.
-            // (They are already processed inside advance_ppu_cycle via
-            // the a12_rising_count drain.)
-        }
-
-        // ── 3. Handle NMI if detected on penultimate cycle ──
-        if nmi_latched {
+        // ── 2. Interrupt dispatch (NMI first: it is not maskable) ──
+        self.cpu.set_nmi_line(self.bus.nmi_line());
+        if self.cpu.poll_nmi() {
             let nc = self.cpu.nmi(&mut self.bus);
             total_cpu_cycles += nc;
             nmi_cycles_acc += nc;
-            let a12 = self.bus.tick_ppu_cycles(nc);
-            for _ in 0..a12 {
-                self.bus.tick_mapper_irq();
-            }
-        } else {
-            // ── 4. Check NMI after all cycles (for NMI that fires on last cycle) ──
-            self.sync_nmi();
-            if self.cpu.poll_nmi() {
-                let nc = self.cpu.nmi(&mut self.bus);
-                total_cpu_cycles += nc;
-                nmi_cycles_acc += nc;
-                let a12 = self.bus.tick_ppu_cycles(nc);
-                for _ in 0..a12 {
-                    self.bus.tick_mapper_irq();
-                }
-            } else if !self.cpu.skip_irq {
-                // ── 5. Handle IRQ ──
-                if self.bus.irq_asserted() && self.cpu.irq_pending() {
-                    self.cpu.irq(&mut self.bus);
-                    total_cpu_cycles += 7;
-                    irq_cycles_acc += 7;
-                    let irq_consumed = self.cpu.ppu_ticks_consumed;
-                    let irq_remaining = 21u16.saturating_sub(irq_consumed);
-                    if irq_remaining > 0 {
-                        let a12 = self.bus.tick_ppu_cycles(irq_remaining / 3);
-                        for _ in 0..a12 {
-                            self.bus.tick_mapper_irq();
-                        }
-                    }
-                    self.sync_nmi();
-                    if self.cpu.poll_nmi() {
-                        let nc = self.cpu.nmi(&mut self.bus);
-                        total_cpu_cycles += nc;
-                        nmi_cycles_acc += nc;
-                        let a12 = self.bus.tick_ppu_cycles(nc);
-                        for _ in 0..a12 {
-                            self.bus.tick_mapper_irq();
-                        }
-                    }
-                }
-            }
+        } else if !self.cpu.skip_irq && self.bus.irq_asserted() && self.cpu.irq_pending() {
+            self.cpu.irq(&mut self.bus);
+            total_cpu_cycles += 7;
+            irq_cycles_acc += 7;
         }
 
-        // ── 6. APU tick (may steal cycles via DMC DMA) ──
+        // ── 3. APU: frame counter / DMC (may steal cycles via DMC DMA) ──
         let stolen = self.bus.step_apu(total_cpu_cycles);
         if stolen > 0 {
-            let stolen_cpu = stolen as u16;
-            let a12 = self.bus.tick_ppu_cycles(stolen_cpu);
-            for _ in 0..a12 {
-                self.bus.tick_mapper_irq();
+            for _ in 0..stolen {
+                self.bus.tick();
             }
-            self.sync_nmi();
-            if self.cpu.poll_nmi() {
-                let nc = self.cpu.nmi(&mut self.bus);
-                total_cpu_cycles += nc;
-                nmi_cycles_acc += nc;
-                let a12 = self.bus.tick_ppu_cycles(nc);
-                for _ in 0..a12 {
-                    self.bus.tick_mapper_irq();
-                }
-            }
+            total_cpu_cycles = total_cpu_cycles.saturating_add(stolen as u16);
         }
 
-        // ── Accumulate timing counters ──
-        let total = total_cpu_cycles as u64 + stolen;
-        self.frame_cycles += total;
+        // ── 4. Accumulate timing counters ──
+        self.frame_cycles += total_cpu_cycles as u64;
         self.timing_instr_cycles += instr_cycles as u64;
         self.timing_nmi_cycles += nmi_cycles_acc as u64;
         self.timing_irq_cycles += irq_cycles_acc as u64;
@@ -250,12 +171,6 @@ impl NesConsole {
     // ════════════════════════════════════════════════════
     // Private helpers
     // ════════════════════════════════════════════════════
-
-    fn sync_nmi(&mut self) {
-        let nmi_state = self.bus.consume_nmi();
-        self.cpu.set_nmi_line(nmi_state);
-    }
-
 
     fn invoke_frame_callback(&mut self, frame_number: u64) {
         if let Some(ref mut cb) = self.frame_callback {

@@ -34,74 +34,44 @@ pub(crate) fn op_brk(
     _mode: AddressMode,
     current_pc: u16,
 ) {
-    // BRK cycle sequence (7 cycles):
-    //   c1: read opcode ($00)          [handled by step(); we tick PPU here]
-    //   c2: read dummy byte at PC+1    [BRK does an automatic fetch of the next byte]
+    // BRK cycle sequence (7 cycles; the opcode fetch already ticked in step()):
+    //   c2: read dummy byte at PC+1 (automatic fetch of the next byte)
     //   c3: push PCH
     //   c4: push PCL
     //   c5: push P (with B=1, bit5=1)
-    //   c6: poll NMI (penultimate) / fetch vector low
+    //   c6: penultimate — NMI is sampled here (vector low fetch)
     //   c7: set I flag, fetch vector high
     //
     // If NMI fires on the penultimate cycle (c6), it preempts BRK:
-    // the status pushed in c5 has B=1 and original I, and NMI vector
-    // is read instead of IRQ/BRK vector. The BRK frame stays on stack.
+    // the status pushed in c5 has B=1 and the original I, and the NMI vector
+    // is read instead of the IRQ/BRK vector. The BRK frame stays on the stack.
 
-    // Cycle 1: PPU tick for opcode fetch (step() reads the opcode but doesn't tick PPU).
-    tick_ppu_cycle(cpu, bus);
-
-    // Cycle 2: dummy fetch of byte following opcode
+    // c2: dummy fetch of the byte following the opcode.
     let _ = bus.read(current_pc.wrapping_add(1));
-    tick_ppu_cycle(cpu, bus);
 
-    // Cycles 3-4: push PCH, then PCL
+    // c3-c5: push PC+2 and P.
     crate::cpu::stack_flags::stack_push_u16(cpu, bus, current_pc.wrapping_add(2));
-    tick_ppu_cycle(cpu, bus); // c3: push PCH
-    tick_ppu_cycle(cpu, bus); // c4: push PCL
-
-    // Cycle 5: push P with B=1 and bit5=1, I unchanged from before BRK
     crate::cpu::stack_flags::stack_push_u8(cpu, bus, cpu.p | 0x30);
-    tick_ppu_cycle(cpu, bus); // c5: push P
 
-    // Cycle 6: penultimate — NMI is sampled here (also vector low fetch on real HW)
-    tick_ppu_cycle(cpu, bus); // c6: poll NMI
+    // c6: the NMI line is sampled at the penultimate cycle.
+    cpu.set_nmi_line(bus.nmi_line());
     let nmi_taken = cpu.poll_nmi();
 
-    // Cycle 7: set I flag and read interrupt vector
-    // On real 6502, I is set and vector high is fetched on cycle 7.
-    cpu.p |= 0x04; // Set I flag
+    cpu.p |= 0x04;
     cpu.irq_inhibit_counter = 0;
     cpu.irq_allow_counter = 0;
     cpu.skip_irq = false;
 
     if nmi_taken {
-        // NMI preempted BRK on the penultimate cycle.
-        // BRK already pushed its full stack frame (PC+2, P with B=1).
-        // NMI vector is used instead of IRQ/BRK vector.
+        // NMI preempted BRK: the BRK frame (PC+2, B=1) stays, NMI vector is used.
         let lo = bus.read(0xFFFA) as u16;
         let hi = bus.read(0xFFFB) as u16;
         cpu.pc = (hi << 8) | lo;
     } else {
-        // Normal BRK: read IRQ/BRK vector.
-        // BRK sets I flag immediately (unlike CLI/SEI/PLP, there is no 1-instruction delay).
-        // No counter needed — the I flag itself blocks IRQ.
+        // Normal BRK: read the IRQ/BRK vector.
         let lo = bus.read(0xFFFE) as u16;
         let hi = bus.read(0xFFFF) as u16;
         cpu.pc = (hi << 8) | lo;
-    }
-
-    // Cycle 7 PPU tick (vector high fetch).
-    tick_ppu_cycle(cpu, bus);
-
-    // 7 CPU cycles total for BRK, all 7 ticked above.
-    cpu.ppu_ticks_consumed = 21; // 7 * 3 PPU dots
-}
-
-/// Tick one CPU cycle worth of PPU dots and feed NMI line state to CPU.
-#[inline]
-fn tick_ppu_cycle(cpu: &mut CPU, bus: &mut dyn BusInterface) {
-    if bus.advance_ppu_cycle() {
-        cpu.set_nmi_line(true);
     }
 }
 

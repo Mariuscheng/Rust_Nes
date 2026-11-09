@@ -1,10 +1,32 @@
 # Step 1：把「時間」收斂成單一時鐘（per-access ticking）
 
-> 狀態：設計稿，尚未實作。
+> 狀態：**1a、1b 已完成**（見 §0 進度），1c–1e 待做。
 > 目標：讓每一次 CPU 匯流排存取都推進 1 個 CPU cycle（3 PPU dots + 1 APU cycle），
 > 取代現在「整條指令跑完再補 tick」的模型。
 > 這一階段**不做**完整 cycle-stepped CPU state machine；它先消除「暫存器存取相位」
 > 與「APU 批次推進」這兩類誤差，再用量測決定是否需要更進一步。
+
+---
+
+## 0. 進度
+
+| 階段 | 狀態 | 內容 / 觀測 |
+|---|---|---|
+| **1a** | ✅ `a61257e` | `MainBus` 去 `RefCell`、`read`/`write` 改 `&mut`、新增 `tick()`。行為不變：golden 10/10 一致。 |
+| **1b** | ✅ 本次 | `read`/`write` 內部 tick（**先 tick 再存取**）、`CPU::step` 用 `cpu_cycles()` 記帳並補足剩餘 cycle、移除 `nes.rs` 補 tick 迴圈與 `ppu_ticks_consumed`、`nmi()`/`irq()`/`op_brk()` 改由自身存取 tick。 |
+| 1c | ⬜ | APU lockstep + DMC request |
+| 1d | ⬜ | DMA 移到指令後執行 |
+| 1e | ⬜ | 中斷取樣精確化（移除 `skip_irq` 等近似） |
+
+**1b 觀測**
+
+- golden：只有 `Mario.nes` frame 600 改變，**6 個像素**（y=30、x=102..111，狀態列
+  `×00` 字型頂端一列），非黑像素數不變（57680）。其餘 9 個檢查點完全一致。
+  原因為 sprite-0 split 的 scanline 邊界位移一格 —— 正是「暫存器存取相位」改變的預期結果。
+- ROM 套件：`all_instrs` / `official_only` / `instr_timing` 仍通過；
+  `vbl_set_time` / `jitter` / `nmi_and_brk` 仍為已知失敗（1c–1e 才處理 APU 與中斷取樣）。
+- 效能：Mario headless 2.34 ms/frame（1a 為 2.26 ms），差異在雜訊範圍。
+- debug build 跑 `instr_timing`：沒有觸發 cycle 記帳的 `debug_assert`。
 
 ---
 

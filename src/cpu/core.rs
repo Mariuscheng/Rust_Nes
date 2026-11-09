@@ -44,9 +44,6 @@ pub struct CPU {
     pub skip_irq: bool,
     /// Total CPU cycles consumed by the last instruction (set by step()).
     pub last_cycles: u16,
-    /// PPU ticks already consumed during this instruction (e.g., BRK pre-check).
-    /// The main loop subtracts this from (last_cycles * 3) to avoid double-ticking.
-    pub ppu_ticks_consumed: u16,
 }
 
 // ── Status flag constants ──
@@ -118,7 +115,6 @@ impl CPU {
             nmi_latch: false,
             skip_irq: false,
             last_cycles: 0,
-            ppu_ticks_consumed: 0,
         }
     }
 
@@ -174,6 +170,7 @@ impl CPU {
     /// The caller is responsible for PPU ticking and interrupt dispatch.
     pub fn step(&mut self, bus: &mut dyn BusInterface) -> u16 {
         let current_pc = self.pc;
+        let start_cycles = bus.cpu_cycles();
 
         bus.set_cpu_pc(current_pc);
 
@@ -186,7 +183,6 @@ impl CPU {
 
         // Reset per-instruction flags
         self.skip_irq = false;
-        self.ppu_ticks_consumed = 0;
 
         let mut extra_cycles: u8 = 0;
         match opcode.op {
@@ -298,6 +294,22 @@ impl CPU {
         let stolen = bus.take_immediate_stolen_cycles();
         total_cycles = total_cycles.wrapping_add(stolen);
 
+        // Bus accesses already advanced one cycle each while the handler ran;
+        // pad the remaining internal cycles so the instruction costs exactly
+        // `total_cycles` on the shared clock.
+        let used = (bus.cpu_cycles() - start_cycles) as u16;
+        debug_assert!(
+            used <= total_cycles,
+            "opcode {:#04X} at {:#06X} used {} cycles but declares {}",
+            opcode_byte,
+            current_pc,
+            used,
+            total_cycles
+        );
+        for _ in used..total_cycles {
+            bus.tick();
+        }
+
         // Decrement interrupt delay counters after instruction completes.
         // This is called here so that unit tests (which call step() directly)
         // also get correct counter behavior.
@@ -309,10 +321,16 @@ impl CPU {
 
     /// Execute NMI (non-maskable interrupt). Returns 7 for the CPU cycles consumed.
     pub fn nmi(&mut self, bus: &mut dyn BusInterface) -> u16 {
+        // c1-c2: internal cycles (dummy reads of the interrupted PC).
+        let _ = bus.read(self.pc);
+        let _ = bus.read(self.pc.wrapping_add(1));
+
+        // c3-c5: push PC high, PC low, then status (B cleared for NMI).
         let pc = self.pc;
         self.stack_push_u16(bus, pc);
         self.stack_push_u8(bus, (self.p & 0xEF) | 0x20);
 
+        // c6-c7: fetch the NMI vector.
         let lo = bus.read(NMI_VECTOR_LO) as u16;
         let hi = bus.read(NMI_VECTOR_HI) as u16;
         self.pc = (hi << 8) | lo;
@@ -321,7 +339,6 @@ impl CPU {
         self.irq_inhibit_counter = 0;
         self.irq_allow_counter = 0;
         self.skip_irq = false;
-        self.ppu_ticks_consumed = 0;
 
         self.last_cycles = 7;
         7
@@ -339,46 +356,23 @@ impl CPU {
         self.irq_inhibit_counter = 0;
         self.irq_allow_counter = 0;
 
+        // c1-c2: internal cycles (dummy reads of the interrupted PC).
+        let _ = bus.read(self.pc);
+        let _ = bus.read(self.pc.wrapping_add(1));
+
+        // c3-c5: push PC high, PC low, then status (B cleared).
         let pc = self.pc;
         self.stack_push_u16(bus, pc);
         self.stack_push_u8(bus, (self.p & 0xEF) | 0x20);
 
-        // Now set I flag — prevents further IRQs during handler.
+        // I flag is set once the status byte is on the stack.
         self.p |= 0x04;
 
-        // NMI can preempt IRQ vectoring at the penultimate cycle (c6).
-        // IRQ sequence (7 CPU cycles):
-        //   c1-c3: push PC+P (3 cycles)
-        //   c4-c5: internal (2 cycles)
-        //   c6:    fetch vector low ← PENULTIMATE, NMI sampled here
-        //   c7:    fetch vector high
-        //
-        // Advance PPU by 18 dots (6 CPU cycles) to reach c6.
-        let nmi_fired = bus.advance_ppu_ticks(18);
-        self.ppu_ticks_consumed = 18;
-        if nmi_fired {
-            self.set_nmi_line(true);
-        }
-        let nmi_taken = self.poll_nmi();
+        // c6-c7: fetch the IRQ vector.
+        let lo = bus.read(IRQ_VECTOR_LO) as u16;
+        let hi = bus.read(IRQ_VECTOR_HI) as u16;
+        self.pc = (hi << 8) | lo;
 
-        // Read the appropriate interrupt vector.
-        // Vector fetch spans c6 (low) and c7 (high).
-        if nmi_taken {
-            // NMI preempts: IRQ frame (B=0) is already on stack.
-            // NMI only changes the vector — no extra frame is pushed.
-            let lo = bus.read(NMI_VECTOR_LO) as u16;
-            let hi = bus.read(NMI_VECTOR_HI) as u16;
-            self.pc = (hi << 8) | lo;
-        } else {
-            let lo = bus.read(IRQ_VECTOR_LO) as u16;
-            let hi = bus.read(IRQ_VECTOR_HI) as u16;
-            self.pc = (hi << 8) | lo;
-        }
-
-        // Advance PPU for the final cycle c7 (vector high fetch, 3 dots).
-        bus.advance_ppu_ticks(3);
-        self.ppu_ticks_consumed += 3;
-        // Total: 21 PPU dots = 7 CPU cycles.
         self.last_cycles = 7;
     }
 
