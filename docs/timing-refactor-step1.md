@@ -113,6 +113,9 @@
   `nmi_timing` —— 需要重新檢視 penultimate 取樣點與 PPU dot 的對齊，留待下一輪。
 - 整個過程 golden frames 都沒有變。
 
+> NMI 斷言／取樣點的設計整理與已排除方案，見
+> [nmi-timing-design.md](nmi-timing-design.md)。
+
 ---
 
 ## 1. 現況
