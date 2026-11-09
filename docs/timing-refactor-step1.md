@@ -106,6 +106,11 @@
   `- -` 與 `V -`。原因是抑制讀取發生在指令的最後一個 cycle，而 CPU 早在
   penultimate cycle 就取樣到 NMI 線，清旗標已經來不及取消 NMI。
   下一輪需要「延後 NMI 線」或「CPU 端取消 latch」。
+- 試過 **CPU 端取消 latch**（PPU 設 `nmi_suppressed` → bus 轉成 cancel 旗標 →
+  `NesConsole::step` 清 `cpu.nmi_latch`）：表格**完全沒變**。原因是 NMI 在更早的
+  指令邊界就已經派發（VBL 在 `nop` 期間設定，CPU 在該指令結束就進 handler），
+  抑制讀取發生時已經來不及。要真正修好，必須讓 NMI 延後 1 dot 斷言，同時保住
+  `nmi_timing` —— 需要重新檢視 penultimate 取樣點與 PPU dot 的對齊，留待下一輪。
 - 整個過程 golden frames 都沒有變。
 
 ---
