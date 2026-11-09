@@ -1,5 +1,5 @@
 use crate::bus::BusInterface;
-use crate::cpu::addressing::{get_operand_address_with_page, read_operand};
+use crate::cpu::addressing::{get_operand_address_with_page, read_operand, read_operand_rmw};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 use crate::cpu::stack_flags::update_zero_and_negative_flags;
@@ -14,7 +14,7 @@ pub(crate) fn op_slo(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let mut value = read_operand(bus, &res);
+    let mut value = read_operand_rmw(bus, &res, &mode);
     let original = value;
     // ASL
     cpu.set_carry((value & 0x80) != 0);
@@ -37,7 +37,7 @@ pub(crate) fn op_rla(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let mut value = read_operand(bus, &res);
+    let mut value = read_operand_rmw(bus, &res, &mode);
     let original = value;
     let old_carry = cpu.carry();
     // ROL
@@ -60,7 +60,7 @@ pub(crate) fn op_sre(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let mut value = read_operand(bus, &res);
+    let mut value = read_operand_rmw(bus, &res, &mode);
     let original = value;
     // LSR
     cpu.set_carry((value & 0x01) != 0);
@@ -82,7 +82,7 @@ pub(crate) fn op_rra(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let mut value = read_operand(bus, &res);
+    let mut value = read_operand_rmw(bus, &res, &mode);
     let original = value;
     let old_carry = cpu.carry();
     // ROR
@@ -148,7 +148,7 @@ pub(crate) fn op_dcp(
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     // DEC memory
-    let original = read_operand(bus, &res);
+    let original = read_operand_rmw(bus, &res, &mode);
     let dec_value = original.wrapping_sub(1);
     bus.write(res.addr, original);
     bus.write(res.addr, dec_value);
@@ -171,7 +171,7 @@ pub(crate) fn op_isc(
     let addr = res.addr;
 
     // INC memory
-    let original = read_operand(bus, &res);
+    let original = read_operand_rmw(bus, &res, &mode);
     let new_m = original.wrapping_add(1);
     bus.write(addr, original);
     bus.write(addr, new_m);

@@ -12,6 +12,9 @@ pub(crate) fn op_jsr(
     current_pc: u16,
 ) {
     let target = get_operand_address(cpu, &mode, bus, current_pc.wrapping_add(1));
+    // JSR: after fetching the low byte of the target the CPU spends one cycle
+    // adjusting the stack pointer before pushing the return address.
+    bus.tick();
     crate::cpu::stack_flags::stack_push_u16(cpu, bus, current_pc.wrapping_add(2));
     cpu.pc = target;
 }

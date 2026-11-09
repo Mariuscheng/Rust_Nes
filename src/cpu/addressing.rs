@@ -29,6 +29,22 @@ pub(crate) fn read_operand(bus: &mut dyn BusInterface, res: &AddrResult) -> u8 {
     bus.read(res.addr)
 }
 
+/// Operand read for read-modify-write instructions. Indexed absolute modes
+/// always spend a cycle on the un-indexed address, even when the index does not
+/// cross a page, so the dummy read happens for every RMW access.
+pub(crate) fn read_operand_rmw(
+    bus: &mut dyn BusInterface,
+    res: &AddrResult,
+    mode: &AddressMode,
+) -> u8 {
+    if let Some(dummy) = res.dummy_addr {
+        bus.read(dummy);
+    } else if matches!(mode, AddressMode::AbsoluteX | AddressMode::AbsoluteY) {
+        bus.read(res.addr);
+    }
+    bus.read(res.addr)
+}
+
 // 提供進階 API：回傳 address 與 page_cross 資訊（高階封裝，供需要計時正確性的實作使用）
 pub(crate) fn get_operand_address_with_page(
     cpu: &CPU,

@@ -1,5 +1,5 @@
 use crate::bus::BusInterface;
-use crate::cpu::addressing::{get_operand_address_with_page, read_operand};
+use crate::cpu::addressing::{get_operand_address_with_page, read_operand_rmw};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 use crate::cpu::stack_flags::update_zero_and_negative_flags;
@@ -19,7 +19,7 @@ pub(crate) fn op_asl(
         0
     } else {
         let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-        let v = read_operand(bus, &res);
+        let v = read_operand_rmw(bus, &res, &mode);
         cpu.set_carry((v & 0x80) != 0);
         // RMW: write original value first (6502 dummy write)
         bus.write(res.addr, v);
@@ -44,7 +44,7 @@ pub(crate) fn op_lsr(
         0
     } else {
         let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-        let value = read_operand(bus, &res);
+        let value = read_operand_rmw(bus, &res, &mode);
         cpu.set_carry((value & 0x01) != 0);
         // RMW: write original value first (6502 dummy write)
         bus.write(res.addr, value);
@@ -70,7 +70,7 @@ pub(crate) fn op_rol(
         0
     } else {
         let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-        let value = read_operand(bus, &res);
+        let value = read_operand_rmw(bus, &res, &mode);
         cpu.set_carry((value & 0x80) != 0);
         // RMW: write original value first (6502 dummy write)
         bus.write(res.addr, value);
@@ -100,7 +100,7 @@ pub(crate) fn op_ror(
         0
     } else {
         let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-        let value = read_operand(bus, &res);
+        let value = read_operand_rmw(bus, &res, &mode);
         let new_carry = (value & 0x01) != 0;
         // RMW: write original value first (6502 dummy write)
         bus.write(res.addr, value);
