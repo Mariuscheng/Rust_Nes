@@ -59,7 +59,7 @@
 | 階段 | 內容 | 驗證 |
 |---|---|---|
 | **P0** | 診斷：列出 padding opcode、抓各 ROM 的失敗訊息 | ✅ |
-| **P1** | 存取位置：補齊 stack/JMP/RTS/RTI/BRK/RMW/寫入指令的內部 cycle 與 dummy access；`used == total` 變成 assertion | `instr_timing`、`all_instrs`、golden |
+| **P1** | 存取位置：補齊 stack/JMP/RTS/RTI/BRK/RMW/寫入指令的內部 cycle 與 dummy access；`used == total` 變成 assertion | 🚧 已完成 PHA/PHP/PLA/PLP 與分支的 operand fetch（padding 123 → 119 opcodes）；JSR/RTS/RTI、RMW 與寫入指令的 dummy access 待做 |
 | **P2** | 中斷語意：poll_iflag / poll_delay / NMI 邊緣鎖存 | ✅ `ppu_vbl_nmi` 6、`cpu_interrupts` 1 |
 | **P3** | DMA：poll 點移到 DMA 之前、513/514 的奇偶規則反了 | ✅ `4-irq_and_dma`、`5-branch_delays_irq` |
 | **P4** | APU frame IRQ：wall-clock countdown（29831）、3-cycle 斷言窗口、奇偶 jitter | ✅ `apu_test` 1–6 |
