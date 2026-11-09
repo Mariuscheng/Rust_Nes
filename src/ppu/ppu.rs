@@ -63,6 +63,9 @@ pub struct PPU {
     pub vbl_set_dot: u32,
     /// Absolute dot at which the VBL flag was last cleared (D1, recorded only).
     pub vbl_clear_dot: u32,
+    /// Dot at which NMI output was last enabled/disabled (D1, recorded only).
+    pub nmi_enable_dot: u32,
+    pub nmi_disable_dot: u32,
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -142,6 +145,8 @@ impl PPU {
             vblank_just_set: false,
             vbl_set_dot: 0,
             vbl_clear_dot: 0,
+            nmi_enable_dot: 0,
+            nmi_disable_dot: 0,
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,
@@ -204,6 +209,9 @@ impl PPU {
                 self.t = (self.t & 0xF3FF) | (((data as u16) & 0x03) << 10);
                 self.vram_increment = self.ctrl.vram_increment;
                 // NES quirk: enabling NMI (bit 7 0→1) during VBlank triggers NMI immediately
+                if !prev_nmi_output && self.ctrl.nmi_output {
+                    self.nmi_enable_dot = self.abs_dot();
+                }
                 if !prev_nmi_output && self.ctrl.nmi_output && self.status.vblank {
                     self.nmi_interrupt = true;
                 }
@@ -211,6 +219,7 @@ impl PPU {
                 // raise a fresh edge (nmi_control test 9/10).
                 if prev_nmi_output && !self.ctrl.nmi_output {
                     self.nmi_interrupt = false;
+                    self.nmi_disable_dot = self.abs_dot();
                 }
             }
             1 => {
