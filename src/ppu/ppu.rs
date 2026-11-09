@@ -58,6 +58,9 @@ pub struct PPU {
     /// True when the VBL flag was set on the most recently processed PPU dot.
     /// A $2002 read on that exact dot returns 0 and suppresses the flag.
     pub(super) vblank_just_set: bool,
+    /// Absolute dot at which the VBL flag was last set. D1 of the dot-offset
+    /// event model (docs/dot-offset-events.md): recorded, not yet used.
+    pub vbl_set_dot: u32,
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -135,6 +138,7 @@ impl PPU {
             a12_rising_count: 0,
             prev_a12: false,
             vblank_just_set: false,
+            vbl_set_dot: 0,
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,

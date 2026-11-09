@@ -34,6 +34,7 @@ impl PPU {
             if self.scanline == 241 && self.cycle == 1 {
                 self.status.vblank = true;
                 self.vblank_just_set = true;
+                self.vbl_set_dot = self.abs_dot();
                 if self.ctrl.nmi_output {
                     self.nmi_interrupt = true;
                 }
