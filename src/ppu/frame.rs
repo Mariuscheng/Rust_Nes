@@ -11,6 +11,8 @@ impl PPU {
 
     pub fn tick(&mut self, ppu_cycles: u16) {
         for _ in 0..ppu_cycles {
+            // The $2002 read-suppression window is a single PPU dot.
+            self.vblank_just_set = false;
             // Odd frame skip: on odd frames with rendering enabled,
             // the pre-render line (scanline 261) skips cycle 0 (341 → 340 dots).
             if self.odd_frame && (self.mask & 0x18) != 0 && self.scanline == 261 && self.cycle == 0 {
@@ -28,11 +30,21 @@ impl PPU {
             // VBlank set at scanline 241, cycle 1
             if self.scanline == 241 && self.cycle == 1 {
                 self.status.vblank = true;
-                self.vblank_set_scanline = self.scanline;
-                self.vblank_set_cycle = self.cycle;
+                self.vblank_just_set = true;
                 if self.ctrl.nmi_output {
-                    self.nmi_delay = 1;
+                    self.nmi_interrupt = true;
                 }
+            }
+
+            // VBlank (and the sprite flags) clear at the start of the pre-render
+            // line. Cycle 2 matches hardware when reads sample at the end of a
+            // CPU cycle's three dots (calibrated with ppu_vbl_nmi).
+            if self.scanline == 261 && self.cycle == 2 {
+                self.status.vblank = false;
+                self.status.sprite_zero_hit = false;
+                self.status.sprite_overflow = false;
+                self.nmi_interrupt = false;
+                self.nmi_delay = 0;
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
@@ -77,11 +89,6 @@ impl PPU {
                     self.scanline = 0;
                     self.frame = self.frame.wrapping_add(1);
                     self.odd_frame = !self.odd_frame;
-                    self.status.vblank = false;
-                    self.status.sprite_zero_hit = false;
-                    self.status.sprite_overflow = false;
-                    self.nmi_interrupt = false;
-                    self.nmi_delay = 0;
                 }
             }
         }

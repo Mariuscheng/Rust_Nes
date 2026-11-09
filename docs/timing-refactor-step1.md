@@ -1,6 +1,6 @@
 # Step 1：把「時間」收斂成單一時鐘（per-access ticking）
 
-> 狀態：**1a–1d 已完成、1e 進行中**（見 §0 進度）。
+> 狀態：**1a–1d 已完成；1e（APU）與 1f（PPU VBL/NMI）進行中**（見 §0 進度）。
 > 目標：讓每一次 CPU 匯流排存取都推進 1 個 CPU cycle（3 PPU dots + 1 APU cycle），
 > 取代現在「整條指令跑完再補 tick」的模型。
 > 這一階段**不做**完整 cycle-stepped CPU state machine；它先消除「暫存器存取相位」
@@ -17,6 +17,7 @@
 | **1c** | ✅ `dbe5d19` | APU 改為 lockstep：`MainBus::tick()` 每 cycle 呼叫 `APU::tick_one()`；DMC 不再自己讀記憶體，改「提出位址 → bus 讀取 → `fill_sample()` 回填」，每個 byte 挪用 4 cycles；`APU::step(batch)` 刪除。 |
 | **1d** | ✅ `b11ed47` | `$4014` 只排入請求，指令結束後由 `run_dma()` 執行：CPU 停住 513/514 cycles（奇偶對齊），每 2 cycles 搬一個 OAM byte，期間 PPU/APU 照常推進。 |
 | **1e** | 🚧 進行中 | 中斷取樣移到倒數第二 cycle；frame counter：門檻集中到 `FRAME_EVENTS`、第一段序列 +3 cycle、5-step 修正。`apu_test` 已通過 test 1–5，現在卡在 test 6。 |
+| **1f** | 🚧 進行中 | PPU VBL/NMI：`$2002` 在旗標設定的同一 dot 讀取會抑制旗標與 NMI；VBL 清除移到 pre-render 開頭（配合 3-dot 取樣校準）；停用 NMI 時拉低 NMI 線、設定當下立即斷言。`ppu_vbl_nmi` 從 2/10 進步到 6/10。 |
 
 **1b 觀測**
 
@@ -89,6 +90,23 @@
 - 剩下的 test 6 #4（`Flag last set too soon`）需要理解原始碼註解所述的
   「flag 連續設定三次、間隔 29831 clocks」行為；目前沒有可靠模型，
   建議先換到 `ppu_vbl_nmi` 的 `vbl_set_time`。
+
+**1f 觀測（PPU VBL / NMI 時序）**
+
+- `$2002` 抑制：PPU 在設定 VBL 的那個 dot 記下 `vblank_just_set`；在該 dot 讀取會
+  回傳 0，並清掉旗標與待發的 NMI。這一項讓 `02-vbl_set_time` 通過。
+- VBL 清除從「frame 結束（scanline 262）」移到 pre-render 開頭；實測用 **cycle 2**
+  （不是文件上的 cycle 1），因為我們的 CPU 讀取是在 3-dot cycle 的尾端取樣
+  → `03-vbl_clear_time` 通過。
+- `$2000` 停用 NMI 時拉低 NMI 線（重新啟用才能產生新的 rising edge）
+  → `04-nmi_control` 通過。
+- NMI 改為 VBL 設定的當下立即斷言（移除 1-dot 的 `nmi_delay`）
+  → `05-nmi_timing` 通過。
+- 目前卡在 `06-suppression`：我們的表格是 row 04 `- N`、05/06 `V N`，硬體應為
+  `- -` 與 `V -`。原因是抑制讀取發生在指令的最後一個 cycle，而 CPU 早在
+  penultimate cycle 就取樣到 NMI 線，清旗標已經來不及取消 NMI。
+  下一輪需要「延後 NMI 線」或「CPU 端取消 latch」。
+- 整個過程 golden frames 都沒有變。
 
 ---
 

@@ -55,8 +55,9 @@ pub struct PPU {
     /// Cleared after the caller drains it via tick_mapper_irq() calls.
     pub a12_rising_count: u8,
     pub(super) prev_a12: bool,
-    pub(super) vblank_set_cycle: u16,
-    pub(super) vblank_set_scanline: u16,
+    /// True when the VBL flag was set on the most recently processed PPU dot.
+    /// A $2002 read on that exact dot returns 0 and suppresses the flag.
+    pub(super) vblank_just_set: bool,
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -133,8 +134,7 @@ impl PPU {
             mapper_irq: false,
             a12_rising_count: 0,
             prev_a12: false,
-            vblank_set_cycle: 0,
-            vblank_set_scanline: 0,
+            vblank_just_set: false,
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,
@@ -200,6 +200,11 @@ impl PPU {
                 if !prev_nmi_output && self.ctrl.nmi_output && self.status.vblank {
                     self.nmi_interrupt = true;
                 }
+                // Disabling NMI drops the NMI line so a later re-enable can
+                // raise a fresh edge (nmi_control test 9/10).
+                if prev_nmi_output && !self.ctrl.nmi_output {
+                    self.nmi_interrupt = false;
+                }
             }
             1 => {
                 self.mask = data;
@@ -247,14 +252,15 @@ impl PPU {
         self.apply_decay();
         match reg_idx {
             2 => {
-                let vblank_visible = self.status.vblank
-                    && !(self.scanline == self.vblank_set_scanline
-                        && self.cycle == self.vblank_set_cycle);
-                let status_bits = if vblank_visible {
-                    self.status.as_u8()
-                } else {
-                    self.status.as_u8() & 0x7F
-                };
+                // Reading $2002 on the exact dot the VBL flag is set returns 0
+                // and suppresses the flag (and its NMI) for the rest of the frame.
+                if self.vblank_just_set {
+                    self.status.vblank = false;
+                    self.nmi_interrupt = false;
+                    self.nmi_delay = 0;
+                    self.vblank_just_set = false;
+                }
+                let status_bits = self.status.as_u8();
                 let res = (status_bits & 0xE0) | (self.open_bus_latch & 0x1F);
                 // Reading $2002 clears VBlank flag and also suppresses pending NMI
                 // (on real NES, reading within the NMI trigger window cancels NMI)
