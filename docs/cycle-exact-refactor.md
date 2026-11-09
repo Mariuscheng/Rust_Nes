@@ -75,9 +75,7 @@
   但 IRQ 仍固定在寫入後 29831 個 CPU clock。改成獨立 wall-clock countdown 後，
   測項 4（jitter）與測項 6（flag 寬度）才同時成立。
 
-## 5. 各測項的正確答案（從 blargg ROM 原始碼取得）
-
-這些表格是測試 ROM 自己印出來的預期值，直接當規格用：
+## 5. 各測項的正確答案（從 blargg ROM 原始碼取得）這些表格是測試 ROM 自己印出來的預期值，直接當規格用：
 
 - **ppu_vbl_nmi 06-suppression**：讀 `$2002` 的時機（相對 VBL flag 可讀點 F）
   `F-1 → " - -"`（旗標完全沒設）、`F, F+1 → "V -"`（讀到旗標但 NMI 被取消）、
@@ -112,7 +110,26 @@
   `apu_test/source/4-jitter.s` 與 `common/sync_apu.s`，把「寫入相位 → IRQ 絕對
   cycle」的對應表建出來，而不是再調一個全域常數。
 
-## 6. 風險
+## 6. 嘗試過但失敗的變體（別重做）
+
+剩下三個測項都卡在「1 個 CPU clock」的 NMI/IRQ 競爭。以下變體都實際跑過：
+
+| 變體 | 結果 |
+|---|---|
+| NMI poll 用 `nmi_edge_seen`（不延遲一個 cycle） | `ppu_vbl_nmi` 的測項 5 `nmi_timing` 表格位移，測項 7 也改變 → 不行；`_prev`（延遲一個 cycle）是對的 |
+| frame IRQ 的奇偶反過來（even → 29832） | `apu_test` 測項 5 失敗、`4-irq_and_dma` 後退 → 不行 |
+| IRQ 取樣再延遲一個 cycle（`irq_asserted_before_tick(1)`） | `4-irq_and_dma`、`5-branch_delays_irq` 立刻後退 → 不行；IRQ 的取樣點在倒數第二個 cycle 是對的 |
+| VBL 清除點移到 dot 3/4/5 | `ppu_vbl_nmi` 測項 3 失敗 → dot 2 是對的 |
+
+**目前不一致的方向**：`cpu_interrupts` 測項 2 的最後一列是「我們的 NMI 早了一個 cycle」
+（`26` vs `27`），但 `3-nmi_and_irq` 的 5–9 列是「我們的 IRQ 早了一個 cycle」
+（`25 20` vs `20 00`）。同一個模型同時偏早、偏晚，代表差異不在 poll 取樣點，
+而在 **PPU 事件本身的 dot 對齊**（VBL set 相對於 CPU cycle 的相位）——也就是
+`docs/nmi-timing-design.md` 當年卡住的地方。下一步應該先把「VBL set dot → 該 CPU
+cycle 的哪個 dot」用實驗釘死（例如在 ROM 裏用 $2001 渲染開關抓 dot），不要再用
+全域常數試誤。
+
+## 7. 風險
 
 - **P1 會動到所有 opcode 的執行路徑**：任何一個 handler 少 tick 或多 tick，都會讓
   `instr_timing`/golden 立刻抓到，所以是可回復的。
