@@ -59,7 +59,7 @@
 | 階段 | 內容 | 驗證 |
 |---|---|---|
 | **P0** | 診斷：列出 padding opcode、抓各 ROM 的失敗訊息 | ✅ |
-| **P1** | 存取位置：補齊 stack/JMP/RTS/RTI/BRK/RMW/寫入指令的內部 cycle 與 dummy access；`used == total` 變成 assertion | 🚧 已完成 PHA/PHP/PLA/PLP 與分支的 operand fetch（padding 123 → 119 opcodes）；JSR/RTS/RTI、RMW 與寫入指令的 dummy access 待做 |
+| **P1** | 存取位置：補齊 stack/JMP/RTS/RTI/BRK/RMW/寫入指令的內部 cycle 與 dummy access；`used == total` 變成 assertion | ✅ 實質完成（padding 123 → 44，剩下的 44 個都是「內部 cycle 本來就在最後」的指令）；assertion 待加白名單 |
 | **P2** | 中斷語意：poll_iflag / poll_delay / NMI 邊緣鎖存 | ✅ `ppu_vbl_nmi` 6、`cpu_interrupts` 1 |
 | **P3** | DMA：poll 點移到 DMA 之前、513/514 的奇偶規則反了 | ✅ `4-irq_and_dma`、`5-branch_delays_irq` |
 | **P4** | APU frame IRQ：wall-clock countdown（29831）、3-cycle 斷言窗口、奇偶 jitter | ✅ `apu_test` 1–6 |
@@ -202,7 +202,21 @@ frame，VBL set 固定在 dot 82182）：
 `abs_dot - vbl_set_dot`，對 **測項 6 的 05/06/07 列**與**測項 7 的 03/04 列**各建一張
 距離表；有了這兩張表，就能判斷「取消窗口」到底該用 1、2 還是 3 dots，而不是再猜。
 
-## 8. 風險
+## 8. 現況總結（Round 16）
+
+**已完成**
+- P2：poll_iflag / poll_delay / NMI 邊緣鎖存（`a56eb8b`）
+- P3：DMA 的 513/514 奇偶反轉 + DMA 前取樣（`7c3cfbe`）→ `4-irq_and_dma` ✅
+- P4：frame IRQ 用 wall-clock countdown 29831／29832 + 3-cycle 窗口（`7c3cfbe`）→ `5-branch_delays_irq` ✅、`apu_test` 1–6
+- P1：存取位置（`139bb1b`、`51b8e0f`、`442aafa`、`6824a2f`）→ padding 123 → 44、`cpu_dummy_writes_oam` ✅
+
+**剩下三個測項**（`ppu_vbl_nmi` 7、`cpu_interrupts` 2、`3-nmi_and_irq`）都只差 1–2 個
+CPU cycle，而且已排除下列所有變數：poll 取樣點、NMI 取消窗口（0–4 dots）、開機相位
+（0–2 dots）、VBL 清除 dot、DMA 取樣點。要再前進，需要把 PPU 事件改成帶 **dot
+offset** 傳給 CPU（目前是每 cycle 固定 3 dot 的取樣），這是本重構最後一塊、也是最
+大的一塊。
+
+## 9. 風險
 
 - **P1 會動到所有 opcode 的執行路徑**：任何一個 handler 少 tick 或多 tick，都會讓
   `instr_timing`/golden 立刻抓到，所以是可回復的。
