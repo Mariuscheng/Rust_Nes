@@ -22,6 +22,17 @@ pub trait BusInterface {
     /// TODO(phase 1c): also step the APU by one cycle here.
     fn tick(&mut self) -> bool;
 
+    /// Advance the machine by one CPU cycle while distributing the PPU dots
+    /// explicitly (C1: lets a PPU-register access sit inside its cycle).
+    /// Default keeps test buses working: dots plain ticks.
+    fn tick_with_dots(&mut self, dots: u16) -> bool {
+        let mut nmi = false;
+        for _ in 0..dots {
+            nmi |= self.tick();
+        }
+        nmi
+    }
+
     fn set_cpu_pc(&mut self, pc: u16);
 
     fn take_immediate_stolen_cycles(&mut self) -> u16;
@@ -471,6 +482,10 @@ impl BusInterface for MainBus {
     }
 
     fn tick(&mut self) -> bool {
+        self.tick_with_dots(3)
+    }
+
+    fn tick_with_dots(&mut self, dots: u16) -> bool {
         self.nmi_before_prev_tick = self.nmi_before_tick;
         self.irq_before_prev_tick = self.irq_before_tick;
         self.nmi_before_tick = self.nmi_line;
