@@ -1,5 +1,5 @@
 use crate::bus::BusInterface;
-use crate::cpu::addressing::{get_operand_address_with_page, read_operand};
+use crate::cpu::addressing::{get_operand_address_with_page, read_operand, read_operand_rmw};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 use crate::cpu::stack_flags::update_zero_and_negative_flags;
@@ -27,7 +27,7 @@ pub(crate) fn op_dec(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let original = bus.read(res.addr);
+    let original = read_operand_rmw(bus, &res, &mode);
     let dec_value = original.wrapping_sub(1);
     // RMW: write original value first (6502 dummy write)
     bus.write(res.addr, original);
@@ -44,7 +44,7 @@ pub(crate) fn op_inc(
     current_pc: u16,
 ) -> u8 {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
-    let original = bus.read(res.addr);
+    let original = read_operand_rmw(bus, &res, &mode);
     let inc_value = original.wrapping_add(1);
     // RMW: write original value first (6502 dummy write)
     bus.write(res.addr, original);

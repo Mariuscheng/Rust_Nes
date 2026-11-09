@@ -55,6 +55,16 @@ pub const FLAG_I: u8 = 0x04;
 pub const FLAG_D: u8 = 0x08;
 pub const FLAG_B: u8 = 0x10;
 pub const FLAG_U: u8 = 0x20;
+
+/// Opcodes whose internal cycle(s) legitimately sit at the end of the
+/// instruction, so the cycle budget may be topped up with a bare tick:
+/// 2-cycle implied instructions, taken branches and RTS/RTI. Everything else
+/// must place its internal cycles at their hardware position.
+const PADDING_ALLOWED: [u8; 36] = [
+    0x0A, 0x10, 0x18, 0x1A, 0x2A, 0x38, 0x3A, 0x40, 0x4A, 0x50, 0x58, 0x5A, 0x60, 0x6A, 0x78,
+    0x7A, 0x88, 0x8A, 0x90, 0x98, 0x9A, 0xA8, 0xAA, 0xB0, 0xB8, 0xBA, 0xC8, 0xCA, 0xD0, 0xD8,
+    0xDA, 0xE8, 0xEA, 0xF0, 0xF8, 0xFA,
+];
 pub const FLAG_V: u8 = 0x40;
 pub const FLAG_N: u8 = 0x80;
 
@@ -276,8 +286,17 @@ impl CPU {
         }
         if used < total_cycles {
             // Trailing padding: some internal cycle of this instruction is not
-            // yet placed at its hardware position (see the P1 phase in
-            // docs/cycle-exact-refactor.md).
+            // yet placed at its hardware position. Only the instructions whose
+            // internal cycle genuinely is their last cycle may rely on this
+            // (see docs/cycle-exact-refactor.md, P1).
+            debug_assert!(
+                PADDING_ALLOWED.contains(&opcode_byte),
+                "opcode {:#04X} at {:#06X} is {} cycles short and is not on the \
+                 padding whitelist",
+                opcode_byte,
+                current_pc,
+                total_cycles - used
+            );
             self.padded[opcode_byte as usize] = true;
         }
 
