@@ -82,11 +82,11 @@ impl APU {
     ///
     /// `bus` 參數僅在 $4015 write 且 DMC 需要立即讀取 sample 時使用。
     /// 回傳 immediate read count（DMC 從 bus 立即讀取的 bytes 數）。
-    pub fn write_register<'a>(
+    pub fn write_register(
         &mut self,
         addr: u16,
         data: u8,
-        bus: Option<&'a dyn crate::bus::BusInterface>,
+        bus: Option<&mut dyn crate::bus::BusInterface>,
     ) -> u8 {
         let mut immediate_reads: u8 = 0;
         match addr {
@@ -285,10 +285,10 @@ impl APU {
     /// 推進 APU 狀態 `cpu_cycles` 步。
     ///
     /// 回傳被 DMC 挪用的總 CPU cycle 數（需補償到 PPU）。
-    pub fn step<'a>(
+    pub fn step(
         &mut self,
         cpu_cycles: u16,
-        bus: &'a dyn crate::bus::BusInterface,
+        bus: &mut dyn crate::bus::BusInterface,
     ) -> u16 {
         let mut stolen_total: u16 = 0;
         for _ in 0..cpu_cycles {
@@ -850,7 +850,7 @@ mod tests {
         }
     }
     impl BusInterface for DummyBus {
-        fn read(&self, addr: u16) -> u8 {
+        fn read(&mut self, addr: u16) -> u8 {
             self.mem[addr as usize]
         }
         fn write(&mut self, addr: u16, data: u8) {
@@ -862,7 +862,7 @@ mod tests {
         fn take_immediate_stolen_cycles(&mut self) -> u16 {
             0
         }
-        fn advance_ppu_cycle(&mut self) -> bool {
+        fn tick(&mut self) -> bool {
             false
         }
     }
@@ -874,9 +874,9 @@ mod tests {
         apu.write_register(0x4000, 0b1011_1111, None);
         apu.write_register(0x4002, 0x70, None);
         apu.write_register(0x4003, 0x08, None);
-        let bus = DummyBus::new();
+        let mut bus = DummyBus::new();
         for _ in 0..=44100 / 60 {
-            let _ = apu.step(1, &bus);
+            let _ = apu.step(1, &mut bus);
         }
         assert!(!apu.drain_audio_buffer().is_empty());
     }
@@ -919,16 +919,16 @@ mod tests {
         apu.frame_step = -1;
         apu.frame_irq_inhibit = false;
 
-        let bus = DummyBus::new();
+        let mut bus = DummyBus::new();
         // 29829 ticks: step goes -1 → 29828 (stops at 29828, no trigger)
         for _ in 0..29829 {
-            apu.step(1, &bus);
+            apu.step(1, &mut bus);
         }
         assert_eq!(apu.frame_step, 29828);
         assert!(!apu.frame_interrupt);
 
         // 29830th tick: step → 29829, triggers quarter+half+IRQ, resets to -1
-        apu.step(1, &bus);
+        apu.step(1, &mut bus);
         assert_eq!(apu.frame_step, -1);
         assert!(apu.frame_interrupt);
     }
@@ -943,21 +943,21 @@ mod tests {
         apu.frame_step = 0;
         apu.frame_irq_inhibit = false;
 
-        let bus = DummyBus::new();
+        let mut bus = DummyBus::new();
         // Step to just before the half+Q (29828)
         for _ in 0..29828 {
-            apu.step(1, &bus);
+            apu.step(1, &mut bus);
         }
         assert_eq!(apu.frame_step, 29828);
         assert!(!apu.frame_interrupt);
 
         // 29829: quarter + half (no IRQ yet)
-        apu.step(1, &bus);
+        apu.step(1, &mut bus);
         assert_eq!(apu.frame_step, 29829);
         assert!(!apu.frame_interrupt);
 
         // 29830: IRQ + reset
-        apu.step(1, &bus);
+        apu.step(1, &mut bus);
         assert_eq!(apu.frame_step, 0);
         assert!(apu.frame_interrupt);
     }

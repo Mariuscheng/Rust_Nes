@@ -3,12 +3,12 @@ use crate::cpu::core::CPU;
 
 // Stack and flag helpers extracted from `mos6502.rs`.
 // Keep crate-level visibility so CPU implementation can call them.
-pub(crate) fn stack_pop_u8(cpu: &mut CPU, bus: &dyn BusInterface) -> u8 {
+pub(crate) fn stack_pop_u8(cpu: &mut CPU, bus: &mut dyn BusInterface) -> u8 {
     cpu.sp = cpu.sp.wrapping_add(1);
     bus.read(0x0100 + cpu.sp as u16)
 }
 
-pub(crate) fn stack_pop_u16(cpu: &mut CPU, bus: &dyn BusInterface) -> u16 {
+pub(crate) fn stack_pop_u16(cpu: &mut CPU, bus: &mut dyn BusInterface) -> u16 {
     let lo = stack_pop_u8(cpu, bus) as u16;
     let hi = stack_pop_u8(cpu, bus) as u16;
     (hi << 8) | lo

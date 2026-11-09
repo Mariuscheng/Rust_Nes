@@ -48,13 +48,13 @@ impl NesConsole {
         let joy2 = Joypad::new();
         let apu = apu::APU::new(crate::constants::DEFAULT_SAMPLE_RATE);
 
-        let bus = MainBus::new(cart.mapper, ram, ppu, joy1, joy2, apu);
+        let mut bus = MainBus::new(cart.mapper, ram, ppu, joy1, joy2, apu);
 
         let mut cpu = CPU::new();
-        cpu.reset(&bus);
+        cpu.reset(&mut bus);
 
         let last_ppu_frame = bus.ppu_frame();
-        let console = NesConsole {
+        let mut console = NesConsole {
             cpu,
             bus,
             last_ppu_frame,
@@ -76,7 +76,7 @@ impl NesConsole {
     }
 
     /// Set a button state on joypad 1 (called by the platform input layer).
-    pub fn set_button(&self, button: Button, pressed: bool) {
+    pub fn set_button(&mut self, button: Button, pressed: bool) {
         self.bus.joypad1_mut().set_button(button, pressed);
     }
 
@@ -86,7 +86,7 @@ impl NesConsole {
     }
 
     /// Drain accumulated audio samples from APU (call once per frame).
-    pub fn drain_audio_samples(&self) -> Vec<f32> {
+    pub fn drain_audio_samples(&mut self) -> Vec<f32> {
         self.bus.drain_audio()
     }
 

@@ -89,9 +89,9 @@ impl DmcChannel {
     /// 嘗試從 bus 讀取一個 byte 填滿 sample buffer。
     ///
     /// 回傳 `(irq_occurred, did_read)`。
-    pub fn fill_sample_buffer<'b>(
+    pub fn fill_sample_buffer(
         &mut self,
-        bus: &'b dyn crate::bus::BusInterface,
+        bus: &mut dyn crate::bus::BusInterface,
     ) -> (bool, bool) {
         if !self.sample_buffer_empty || self.bytes_remaining == 0 {
             return (false, false);
@@ -121,9 +121,9 @@ impl DmcChannel {
     ///
     /// 回傳 `(irq_occurred, read_count)`，其中 `read_count` 表示
     /// DMC 從 bus 讀取了多少 bytes（每個 byte 對應 4 CPU cycle 被挪用）。
-    pub fn clock_timer<'b>(
+    pub fn clock_timer(
         &mut self,
-        bus: &'b dyn crate::bus::BusInterface,
+        bus: &mut dyn crate::bus::BusInterface,
     ) -> (bool, u8) {
         let mut reads: u8 = 0;
         let mut irq = false;

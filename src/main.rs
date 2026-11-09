@@ -193,7 +193,7 @@ fn run_with_window(console: &mut NesConsole) {
     }
 }
 
-fn poll_input(console: &NesConsole, window: &Window) {
+fn poll_input(console: &mut NesConsole, window: &Window) {
     console.set_button(Button::A, window.is_key_down(Key::Z));
     console.set_button(Button::B, window.is_key_down(Key::X));
     console.set_button(Button::Start, window.is_key_down(Key::Enter));

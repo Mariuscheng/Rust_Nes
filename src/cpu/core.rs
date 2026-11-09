@@ -122,7 +122,7 @@ impl CPU {
         }
     }
 
-    pub fn reset(&mut self, bus: &impl BusInterface) {
+    pub fn reset(&mut self, bus: &mut impl BusInterface) {
         let lo = bus.read(RESET_VECTOR_LO) as u16;
         let hi = bus.read(RESET_VECTOR_HI) as u16;
         self.pc = (hi << 8) | lo;

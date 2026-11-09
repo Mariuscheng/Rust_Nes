@@ -24,7 +24,7 @@ mod tests {
         }
     }
     impl BusInterface for DummyBus {
-        fn read(&self, addr: u16) -> u8 {
+        fn read(&mut self, addr: u16) -> u8 {
             self.mem[addr as usize]
         }
         fn write(&mut self, addr: u16, data: u8) {
@@ -36,7 +36,7 @@ mod tests {
         fn take_immediate_stolen_cycles(&mut self) -> u16 {
             0
         }
-        fn advance_ppu_cycle(&mut self) -> bool {
+        fn tick(&mut self) -> bool {
             false
         }
     }

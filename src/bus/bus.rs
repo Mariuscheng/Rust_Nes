@@ -1,5 +1,3 @@
-use std::cell::{Cell, RefCell, RefMut};
-
 use crate::apu::APU;
 use crate::constants::PRG_ROM_START;
 use crate::joypad::Joypad;
@@ -8,20 +6,38 @@ use crate::ram::Ram;
 use crate::rom::MapperVariant;
 
 pub trait BusInterface {
-    fn read(&self, addr: u16) -> u8;
+    /// Read one byte from the bus.
+    ///
+    /// Phase 1b of the timing refactor will advance the machine by one CPU
+    /// cycle here; for now the clock is still driven from `NesConsole::step`.
+    fn read(&mut self, addr: u16) -> u8;
+
+    /// Write one byte to the bus.
     fn write(&mut self, addr: u16, data: u8);
+
+    /// Advance the machine by one CPU cycle (3 PPU dots + mapper IRQ clocking).
+    /// Returns true when the PPU's NMI line is asserted.
+    ///
+    /// TODO(phase 1c): also step the APU by one cycle here.
+    fn tick(&mut self) -> bool;
+
     fn set_cpu_pc(&mut self, pc: u16);
+
     fn take_immediate_stolen_cycles(&mut self) -> u16;
-    /// Advance PPU by 1 CPU cycle (3 PPU dots). Returns true if NMI was
-    /// asserted during this cycle. If true, the NMI flag is consumed so the
-    /// caller is responsible for handling it (by reading NMI vector).
-    fn advance_ppu_cycle(&mut self) -> bool;
-    /// Advance PPU by `ticks` PPU dots. Returns true if NMI was asserted
-    /// during this batch. Provided for backward-compatible batch ticking.
+
+    /// Advance PPU by 1 CPU cycle (3 PPU dots).
+    ///
+    /// TODO(phase 1e): call sites are replaced by `tick()`.
+    fn advance_ppu_cycle(&mut self) -> bool {
+        self.tick()
+    }
+
+    /// Advance PPU by `ticks` PPU dots (batch form).
+    ///
+    /// TODO(phase 1e): remove once every caller ticks per cycle.
     fn advance_ppu_ticks(&mut self, ticks: u16) -> bool {
         let mut result = false;
-        let cycles = ticks / 3;
-        for _ in 0..cycles {
+        for _ in 0..ticks / 3 {
             if self.advance_ppu_cycle() {
                 result = true;
             }
@@ -30,14 +46,23 @@ pub trait BusInterface {
     }
 }
 
-/// 安全的唯讀記憶體視圖，供 APU 在 $4015 寫入時讀取記憶體使用
-struct ImmediateMemoryBusRef<'a> {
+/// Read-only view of the memory the APU can reach (DMC sample fetches, $4015).
+///
+/// The APU gets this instead of a `&MainBus`, so it never needs a borrow of
+/// the whole bus while the bus itself is mutably borrowed by the console.
+pub struct ApuMemoryView<'a> {
     ram: &'a Ram,
     mapper: &'a MapperVariant,
 }
 
-impl BusInterface for ImmediateMemoryBusRef<'_> {
-    fn read(&self, addr: u16) -> u8 {
+impl<'a> ApuMemoryView<'a> {
+    pub fn new(ram: &'a Ram, mapper: &'a MapperVariant) -> Self {
+        Self { ram, mapper }
+    }
+}
+
+impl BusInterface for ApuMemoryView<'_> {
+    fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => self.ram.read(addr),
             0x6000..=0xFFFF => self.mapper.read_prg(addr),
@@ -45,29 +70,29 @@ impl BusInterface for ImmediateMemoryBusRef<'_> {
         }
     }
     fn write(&mut self, _addr: u16, _data: u8) {}
+    fn tick(&mut self) -> bool {
+        false
+    }
     fn set_cpu_pc(&mut self, _pc: u16) {}
     fn take_immediate_stolen_cycles(&mut self) -> u16 {
         0
-    }
-    fn advance_ppu_cycle(&mut self) -> bool {
-        false
     }
 }
 
 pub struct MainBus {
     ram: Ram,
     mapper: MapperVariant,
-    ppu: RefCell<PPU>,
-    joypad1: RefCell<Joypad>,
-    joypad2: RefCell<Joypad>,
-    apu: RefCell<APU>,
+    ppu: PPU,
+    joypad1: Joypad,
+    joypad2: Joypad,
+    apu: APU,
     dma_stolen_cycles: u16,
-    /// Accumulated CPU cycles for DMA parity tracking.
-    cpu_cycle_count: Cell<u64>,
-    /// CPU open bus latch: tracks the last value driven on the CPU data bus.
-    /// When reading from an unmapped/write-only address, the bus retains its
-    /// previous value due to parasitic capacitance.
-    open_bus_latch: Cell<u8>,
+    /// Accumulated CPU cycles (DMA parity, future scheduling).
+    cpu_cycle_count: u64,
+    /// CPU open bus latch: the last value driven on the CPU data bus.
+    open_bus_latch: u8,
+    /// PPU NMI line state, refreshed by `tick()`.
+    nmi_line: bool,
 }
 
 impl MainBus {
@@ -82,49 +107,47 @@ impl MainBus {
         Self {
             ram,
             mapper,
-            ppu: RefCell::new(ppu),
-            joypad1: RefCell::new(joypad1),
-            joypad2: RefCell::new(joypad2),
-            apu: RefCell::new(apu),
+            ppu,
+            joypad1,
+            joypad2,
+            apu,
             dma_stolen_cycles: 0,
-            cpu_cycle_count: Cell::new(0),
-            open_bus_latch: Cell::new(0),
+            cpu_cycle_count: 0,
+            open_bus_latch: 0,
+            nmi_line: false,
         }
     }
 
     // ══════════════════════════════════════════════
-    // PPU accessors (encapsulated)
+    // PPU accessors
     // ══════════════════════════════════════════════
 
     /// Return the PPU frame counter.
     pub fn ppu_frame(&self) -> u64 {
-        self.ppu.borrow().frame
+        self.ppu.frame
     }
 
     /// Tick PPU for `cpu_cycles` CPU cycles (each = 3 PPU dots).
-    /// Returns the number of A12 rising edges detected.
-    /// Also updates the CPU cycle counter for DMA parity tracking.
-    pub fn tick_ppu_cycles(&self, cpu_cycles: u16) -> u8 {
-        self.cpu_cycle_count.set(self.cpu_cycle_count.get() + cpu_cycles as u64);
-        let mut ppu = self.ppu.borrow_mut();
-        ppu.tick(cpu_cycles.saturating_mul(3));
-        let a12_count = ppu.a12_rising_count;
-        ppu.a12_rising_count = 0;
-        a12_count
+    /// Returns the number of A12 rising edges detected; the caller decides
+    /// whether to clock the mapper IRQ for each of them.
+    pub fn tick_ppu_cycles(&mut self, cpu_cycles: u16) -> u8 {
+        self.cpu_cycle_count += cpu_cycles as u64;
+        self.ppu.tick(cpu_cycles.saturating_mul(3));
+        let count = self.ppu.a12_rising_count;
+        self.ppu.a12_rising_count = 0;
+        count
     }
 
     /// Tick mapper IRQ once (MMC3 scanline counter on A12 edge).
-    /// Stores the result into ppu.mapper_irq.
     pub fn tick_mapper_irq(&mut self) {
-        let mut ppu = self.ppu.borrow_mut();
-        ppu.mapper_irq = self.mapper.tick_mapper_irq();
+        let irq = self.mapper.tick_mapper_irq();
+        self.ppu.mapper_irq = irq;
     }
 
     /// Consume and return the NMI flag from PPU.
-    pub fn consume_nmi(&self) -> bool {
-        let mut ppu = self.ppu.borrow_mut();
-        if ppu.nmi_interrupt {
-            ppu.nmi_interrupt = false;
+    pub fn consume_nmi(&mut self) -> bool {
+        if self.ppu.nmi_interrupt {
+            self.ppu.nmi_interrupt = false;
             true
         } else {
             false
@@ -133,7 +156,7 @@ impl MainBus {
 
     /// Read the frame buffer into `buf`.
     pub fn read_frame_buffer(&self, buf: &mut [u32; 256 * 240]) {
-        buf.copy_from_slice(self.ppu.borrow().frame_buffer.as_ref());
+        buf.copy_from_slice(self.ppu.frame_buffer.as_ref());
     }
 
     // ══════════════════════════════════════════════
@@ -141,24 +164,23 @@ impl MainBus {
     // ══════════════════════════════════════════════
 
     /// Step APU by `cpu_cycles`. Returns stolen CPU cycles (for DMC DMA).
-    pub fn step_apu(&self, cpu_cycles: u16) -> u64 {
-        let bus_ref: &MainBus = self;
-        self.apu.borrow_mut().step(cpu_cycles, bus_ref) as u64
+    pub fn step_apu(&mut self, cpu_cycles: u16) -> u64 {
+        let mut view = ApuMemoryView::new(&self.ram, &self.mapper);
+        self.apu.step(cpu_cycles, &mut view) as u64
     }
 
     /// Drain accumulated audio samples.
-    pub fn drain_audio(&self) -> Vec<f32> {
-        self.apu.borrow_mut().drain_audio_buffer()
+    pub fn drain_audio(&mut self) -> Vec<f32> {
+        self.apu.drain_audio_buffer()
     }
-
 
     // ══════════════════════════════════════════════
     // Joypad accessors
     // ══════════════════════════════════════════════
 
     /// Borrow joypad 1 mutably (for setting button state).
-    pub fn joypad1_mut(&self) -> RefMut<'_, Joypad> {
-        self.joypad1.borrow_mut()
+    pub fn joypad1_mut(&mut self) -> &mut Joypad {
+        &mut self.joypad1
     }
 
     // ══════════════════════════════════════════════
@@ -166,22 +188,21 @@ impl MainBus {
     // ══════════════════════════════════════════════
 
     /// Sync CHR-ROM data to PPU chr_ram (bank switching may have changed).
-    pub fn sync_chr_to_ppu(&self) {
+    ///
+    /// TODO: read CHR through the mapper at fetch time instead (mid-frame
+    /// bank switching support), then delete this copy.
+    pub fn sync_chr_to_ppu(&mut self) {
         if self.mapper.has_chr_ram() {
             return;
         }
-        let mut ppu = self.ppu.borrow_mut();
         for i in 0..8192 {
-            ppu.chr_ram[i] = self.mapper.read_chr(i as u16);
+            self.ppu.chr_ram[i] = self.mapper.read_chr(i as u16);
         }
     }
 
     /// Return true if any IRQ source is currently active.
     pub fn irq_asserted(&self) -> bool {
-        let mapper_irq = self.ppu.borrow().mapper_irq;
-        let frame_irq = self.apu.borrow().frame_interrupt;
-        let dmc_irq = self.apu.borrow().dmc_interrupt;
-        frame_irq || dmc_irq || mapper_irq
+        self.ppu.mapper_irq || self.apu.frame_interrupt || self.apu.dmc_interrupt
     }
 
     // ══════════════════════════════════════════════
@@ -218,58 +239,56 @@ impl MainBus {
 
     /// Save PPU state for external serialization.
     pub fn ppu_save_state(&self) -> PpuSnapshot {
-        let ppu = self.ppu.borrow();
         let mut vram = [0u8; 2048];
-        vram.copy_from_slice(&ppu.vram[..2048]);
+        vram.copy_from_slice(&self.ppu.vram[..2048]);
         PpuSnapshot {
-            v: ppu.v,
-            t: ppu.t,
-            x: ppu.x,
-            w: ppu.w,
-            scanline: ppu.scanline,
-            cycle: ppu.cycle,
-            frame: ppu.frame,
-            odd_frame: ppu.odd_frame,
-            read_buffer: ppu.read_buffer,
-            oam_addr: ppu.oam_addr,
-            oam: ppu.oam,
+            v: self.ppu.v,
+            t: self.ppu.t,
+            x: self.ppu.x,
+            w: self.ppu.w,
+            scanline: self.ppu.scanline,
+            cycle: self.ppu.cycle,
+            frame: self.ppu.frame,
+            odd_frame: self.ppu.odd_frame,
+            read_buffer: self.ppu.read_buffer,
+            oam_addr: self.ppu.oam_addr,
+            oam: self.ppu.oam,
             vram,
-            palette: ppu.palette,
-            chr_ram: ppu.chr_ram,
+            palette: self.ppu.palette,
+            chr_ram: self.ppu.chr_ram,
         }
     }
 
     /// Load PPU state.
-    pub fn ppu_load_state(&self, snap: &PpuSnapshot) {
-        let mut ppu = self.ppu.borrow_mut();
-        ppu.v = snap.v;
-        ppu.t = snap.t;
-        ppu.x = snap.x;
-        ppu.w = snap.w;
-        ppu.scanline = snap.scanline;
-        ppu.cycle = snap.cycle;
-        ppu.frame = snap.frame;
-        ppu.odd_frame = snap.odd_frame;
-        ppu.read_buffer = snap.read_buffer;
-        ppu.oam_addr = snap.oam_addr;
-        ppu.oam.copy_from_slice(&snap.oam);
-        ppu.vram[..2048].copy_from_slice(&snap.vram);
-        ppu.palette.copy_from_slice(&snap.palette);
-        ppu.chr_ram.copy_from_slice(&snap.chr_ram);
+    pub fn ppu_load_state(&mut self, snap: &PpuSnapshot) {
+        self.ppu.v = snap.v;
+        self.ppu.t = snap.t;
+        self.ppu.x = snap.x;
+        self.ppu.w = snap.w;
+        self.ppu.scanline = snap.scanline;
+        self.ppu.cycle = snap.cycle;
+        self.ppu.frame = snap.frame;
+        self.ppu.odd_frame = snap.odd_frame;
+        self.ppu.read_buffer = snap.read_buffer;
+        self.ppu.oam_addr = snap.oam_addr;
+        self.ppu.oam.copy_from_slice(&snap.oam);
+        self.ppu.vram[..2048].copy_from_slice(&snap.vram);
+        self.ppu.palette.copy_from_slice(&snap.palette);
+        self.ppu.chr_ram.copy_from_slice(&snap.chr_ram);
     }
 
     /// Save APU state for external serialization.
     pub fn apu_save_state(&self) -> Vec<u8> {
-        self.apu.borrow().save_state()
+        self.apu.save_state()
     }
 
     /// Load APU state.
-    pub fn apu_load_state(&self, data: &[u8]) {
-        self.apu.borrow_mut().load_state(data);
+    pub fn apu_load_state(&mut self, data: &[u8]) {
+        self.apu.load_state(data);
     }
 }
 
-/// Snapshot of PPU state for save/load (avoids exposing RefCell).
+/// Snapshot of PPU state for save/load (avoids exposing internals).
 pub struct PpuSnapshot {
     pub v: u16,
     pub t: u16,
@@ -288,102 +307,90 @@ pub struct PpuSnapshot {
 }
 
 impl BusInterface for MainBus {
-    fn read(&self, addr: u16) -> u8 {
+    fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {
                 let val = self.ram.read(addr);
-                self.open_bus_latch.set(val);
+                self.open_bus_latch = val;
                 val
             }
             0x2000..=0x3FFF => {
                 let reg = addr & 0x0007;
-                let val = self.ppu.borrow_mut().cpu_read(reg);
-                self.open_bus_latch.set(val);
+                let val = self.ppu.cpu_read(reg);
+                self.open_bus_latch = val;
                 val
             }
             0x4014 => {
                 // OAMDMA write-only — read returns open bus.
-                self.open_bus_latch.get()
+                self.open_bus_latch
             }
             0x4015 => {
-                let val = self.apu.borrow_mut().read_status();
-                self.open_bus_latch.set(val);
+                let val = self.apu.read_status();
+                self.open_bus_latch = val;
                 val
             }
             0x4016 => {
                 // bit0 = controller data; bits 1-7 = open bus
-                let joy_val = self.joypad1.borrow_mut().cpu_read();
-                let val = (self.open_bus_latch.get() & 0xFE) | (joy_val & 0x01);
-                self.open_bus_latch.set(val);
+                let joy_val = self.joypad1.cpu_read();
+                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
+                self.open_bus_latch = val;
                 val
             }
             0x4017 => {
                 // bit0 = controller data; bits 1-7 = open bus
-                let joy_val = self.joypad2.borrow_mut().cpu_read();
-                let val = (self.open_bus_latch.get() & 0xFE) | (joy_val & 0x01);
-                self.open_bus_latch.set(val);
+                let joy_val = self.joypad2.cpu_read();
+                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
+                self.open_bus_latch = val;
                 val
             }
             0x6000..=0xFFFF => {
                 let val = self.mapper.read_prg(addr);
-                self.open_bus_latch.set(val);
+                self.open_bus_latch = val;
                 val
             }
             // $4000-$4013 (write-only APU), $4018-$5FFF (unmapped) → open bus
-            _ => self.open_bus_latch.get(),
+            _ => self.open_bus_latch,
         }
     }
 
     fn write(&mut self, addr: u16, data: u8) {
-        self.open_bus_latch.set(data);
+        self.open_bus_latch = data;
         match addr {
             0x0000..=0x1FFF => self.ram.write(addr, data),
             0x2000..=0x3FFF => {
                 let reg = addr & 0x0007;
-                self.ppu.borrow_mut().cpu_write(reg, data);
+                self.ppu.cpu_write(reg, data);
             }
             0x4014 => {
                 // OAM DMA
                 let base = (data as u16) << 8;
-                let ppu = self.ppu.borrow();
-                let mapper = &self.mapper;
-                let ram = &self.ram;
                 let mut oam_data = [0u8; 256];
                 for i in 0..256u16 {
                     let addr = base.wrapping_add(i);
                     let val = match addr {
-                        0x0000..=0x1FFF => ram.read(addr),
-                        0x6000..=0x7FFF => mapper.read_prg(addr),
-                        0x8000..=0xFFFF => mapper.read_prg(addr),
-                        _ => self.open_bus_latch.get(),
+                        0x0000..=0x1FFF => self.ram.read(addr),
+                        0x6000..=0xFFFF => self.mapper.read_prg(addr),
+                        _ => self.open_bus_latch,
                     };
                     oam_data[i as usize] = val;
                 }
-                drop(ppu);
                 // DMA takes 513 or 514 CPU cycles (even/odd cycle alignment).
                 // The parity is determined by the CPU cycle count before DMA starts.
-                let dma_cycles = if self.cpu_cycle_count.get() & 1 == 0 { 513 } else { 514 };
+                let dma_cycles = if self.cpu_cycle_count & 1 == 0 { 513 } else { 514 };
                 self.dma_stolen_cycles += dma_cycles;
-                // cpu_cycle_count will be incremented by tick_ppu_cycles later
-                // when the stolen cycles are accounted for in the main loop.
-                let mut ppu = self.ppu.borrow_mut();
-                for (i, &b) in oam_data.iter().enumerate() {
-                    ppu.oam[i] = b;
-                }
+                self.ppu.oam.copy_from_slice(&oam_data);
             }
             0x4000..=0x4013 => {
-                self.apu.borrow_mut().write_register(addr, data, None);
+                self.apu.write_register(addr, data, None);
             }
             0x4015 => {
-                self.apu.borrow_mut().write_register(0x4015, data, Some(&ImmediateMemoryBusRef {
-                    ram: &self.ram,
-                    mapper: &self.mapper,
-                }));
+                let mut view = ApuMemoryView::new(&self.ram, &self.mapper);
+                self.apu.write_register(0x4015, data, Some(&mut view));
             }
-            0x4016 => self.joypad1.borrow_mut().cpu_write(data),
+            0x4016 => self.joypad1.cpu_write(data),
             0x4017 => {
-                self.joypad2.borrow_mut().cpu_write(data);
-                self.apu.borrow_mut().write_register(0x4017, data, None);
+                self.joypad2.cpu_write(data);
+                self.apu.write_register(0x4017, data, None);
             }
             // Extended audio registers ($5000-$5FFF) — route to mapper for VRC6/MMC5
             0x5000..=0x5FFF => {
@@ -402,32 +409,28 @@ impl BusInterface for MainBus {
         }
     }
 
+    fn tick(&mut self) -> bool {
+        self.cpu_cycle_count += 1;
+        self.ppu.tick(3);
+        let a12_ticks = self.ppu.a12_rising_count;
+        self.ppu.a12_rising_count = 0;
+        for _ in 0..a12_ticks {
+            self.tick_mapper_irq();
+        }
+        self.nmi_line = self.ppu.nmi_interrupt;
+        self.nmi_line
+    }
+
     fn set_cpu_pc(&mut self, pc: u16) {
         // On the 6502, when the CPU transitions to a new PC, the high byte
         // of the address can couple onto the data bus through parasitic
         // capacitance, influencing the open bus latch.
-        self.open_bus_latch.set((pc >> 8) as u8);
+        self.open_bus_latch = (pc >> 8) as u8;
     }
 
     fn take_immediate_stolen_cycles(&mut self) -> u16 {
         let dma = self.dma_stolen_cycles;
         self.dma_stolen_cycles = 0;
         dma
-    }
-
-    fn advance_ppu_cycle(&mut self) -> bool {
-        self.cpu_cycle_count.set(self.cpu_cycle_count.get() + 1);
-        let mut ppu = self.ppu.borrow_mut();
-        ppu.tick(3);
-        let a12_ticks = ppu.a12_rising_count;
-        ppu.a12_rising_count = 0;
-        let nmi_state = ppu.nmi_interrupt;
-        drop(ppu);
-        for _ in 0..a12_ticks {
-            self.tick_mapper_irq();
-        }
-        // Return NMI line state WITHOUT consuming it.
-        // Consumption happens via consume_nmi() at instruction boundaries.
-        nmi_state
     }
 }
