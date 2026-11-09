@@ -72,6 +72,18 @@ fn events_before_dot(&self, cycle_delay: u8, dot: u8) -> impl Iterator<Item = Do
 | **D4** | `$2000` quirk 改用 dot 比較 | `3-nmi_and_irq` |
 | **D5** | frame IRQ 的 dot（目前用 wall-clock countdown，若不需改就跳過） | `apu_test` 7–8 |
 
+## 4b. 實作時發現的關鍵前提（Round 31）
+
+D1 的資料通路已完成（PPU 記錄四個 dot、MainBus::dot_history(cycle_delay)），
+但光有這些還不夠：**CPU 的存取本身沒有 dot 位置**。
+
+us.tick() 一次跑完 3 個 dot，存取發生在 tick 之後，所以 bs_dot() 在讀取
+$2002 時永遠是「該 cycle 的第三個 dot 之後」。不論 bl_set_dot 記得多精確，
+delta = read_dot - set_dot 都只會取到每 cycle 一個值，測項要分辨的那一格仍然取不到。
+
+因此 D1 還缺一塊：**把 PPU 推進拆成「存取前 / 存取後」兩段**，或等價地把 	ick() 改成
+「先跑完 cycle，存取時再補剩下的 dot」。做完之後 delta 才有 3 種可能值，D2 的比較才有意義。
+
 ## 5. 風險
 
 - **golden 可能位移**：D2/D3 會改變 `$2002` 讀取的判定，若某些 ROM 依賴現行（錯誤的）
