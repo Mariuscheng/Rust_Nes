@@ -150,13 +150,25 @@ cycle 的哪個 dot」用實驗釘死（例如在 ROM 裏用 $2001 渲染開關�
 `sync_vbl_delay` 在我們的 CPU 上實際花了幾個 cycle（用 trace 數），而不是假設它
 等於硬體。
 
-**已量測（Round 6）**：對 `ppu_vbl_nmi` 測項 7 的 `$2000` 寫入做了 trace，相鄰兩列的
-`abs_dot` 正好差 1（82156, 82157, 82158…），所以**我們確實有 1-dot 的列解析度**，
-上面那個懷疑不成立。同時看到一個未解的矛盾：在 enable（`dot=82159, vbl=false`）
-與 disable（`dot=82213, vbl=false`）之間，PPU 應該在 `dot=82182` 設過 VBL，但
-disable 當下 `status.vblank` 卻是 false——代表那段時間內有東西把旗標清掉了，或者
-兩筆寫入其實落在不同 frame。下一輪先用 trace 把 `[VBLSET]` 與兩筆寫入**依序列出**
-（目前 70 frame 的視窗還沒跑到測項 7），就能判斷是哪一種。
+**已量測（Round 6/7）**：對 `ppu_vbl_nmi` 測項 7 的 `$2000` 寫入做了 trace，相鄰兩列的
+`abs_dot` 正好差 1，所以**我們確實有 1-dot 的列解析度**。九列的完整時間軸（同一個
+frame，VBL set 固定在 dot 82182）：
+
+| 列 | enable dot | disable dot | disable 時 vbl | 預期 |
+|---|---|---|---|---|
+| 00–04 | 82153–82157 | 82261–82265 | true | N |
+| 05 | 82158 | 82266 | true | **-** |
+| 06–08 | 82159–82161 | 82213–82215 | false | - |
+
+兩件怪事：
+1. 每一列在 `dot=82182` 都印出 `out=true`，也就是**九列的 VBL set 都發生在 NMI 開啟
+   期間**，線路應該都被拉高；但預期只有前五列會產生 NMI。差別只能在 CPU 什麼時候
+   採樣到這個邊緣。
+2. enable→disable 的間隔在 00–05 列是 108 dots（36 cycles），06–08 列是 54 dots
+   （18 cycles）——比 ROM 原始碼的 `nop; nop; lda #0; sta $2000`（10 cycles）都長，
+   代表中間還有東西在跑（很可能是 NMI handler 本身，或 CRC/print 的巨集）。下一輪
+   要在 trace 裡把 `nmi_count` 與 PC 一起印出來，才能確定「NMI 到底有沒有被取用、
+   被誰取用」。
 
 ## 8. 風險
 
