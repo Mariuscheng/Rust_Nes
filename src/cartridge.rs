@@ -28,6 +28,11 @@ impl Cartridge {
         })
     }
 
+    /// True when the cartridge exposes CHR RAM (writable pattern memory).
+    pub fn is_chr_ram(&self) -> bool {
+        self.has_chr_ram
+    }
+
     /// 將 CHR-ROM 資料寫入 PPU 的 chr_ram。
     /// CHR-RAM mappers 不需要呼叫此方法（遊戲透過 $2007 寫入圖形資料）。
     pub fn init_chr_ram(&self, chr_ram: &mut [u8; 8192]) {

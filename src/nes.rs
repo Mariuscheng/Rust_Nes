@@ -43,6 +43,7 @@ impl NesConsole {
 
         // Load CHR-ROM into PPU (CHR-RAM mappers skip this — games write via $2007).
         cart.init_chr_ram(&mut ppu.chr_ram);
+        ppu.chr_is_ram = cart.is_chr_ram();
 
         let joy1 = Joypad::new();
         let joy2 = Joypad::new();

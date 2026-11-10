@@ -42,6 +42,10 @@ pub struct PPU {
     pub vram: [u8; 4096],
     pub palette: [u8; 32],
     pub chr_ram: [u8; 8192],
+    /// True when the cartridge exposes CHR RAM. With CHR ROM the pattern
+    /// memory is read-only: `$2007` writes to `$0000-$1FFF` are ignored by
+    /// hardware, so they must not corrupt the pattern tables here either.
+    pub chr_is_ram: bool,
     pub mirroring: Mirroring,
     pub scanline: u16,
     pub cycle: u16,
@@ -132,6 +136,7 @@ impl PPU {
             vram: [0; 4096],
             palette: [0; 32],
             chr_ram: [0; 8192],
+            chr_is_ram: true,
             mirroring,
             scanline: 0,
             cycle: 0,
@@ -348,7 +353,7 @@ impl PPU {
     pub fn internal_write(&mut self, addr: u16, data: u8) {
         let addr = addr & 0x3FFF;
         match addr {
-            0x0000..=0x1FFF => self.chr_ram[addr as usize] = data,
+            0x0000..=0x1FFF if self.chr_is_ram => self.chr_ram[addr as usize] = data,
             0x2000..=0x3EFF => {
                 let idx = self.mirror_nametable_addr(addr);
                 self.vram[idx] = data;
@@ -414,5 +419,33 @@ impl PPU {
         let b = color & 0xFF;
         let gray = (r as f32 * 0.299 + g as f32 * 0.587 + b as f32 * 0.114) as u32;
         (gray << 16) | (gray << 8) | gray
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pattern memory is read-only on CHR-ROM cartridges: a `$2007` write into
+    /// `$0000-$1FFF` must be ignored instead of corrupting the tile data.
+    ///
+    /// Regression: 1942 clears sprite tiles `$00`/`$01` this way (a write the
+    /// hardware drops), which used to blank its HUD digits — "1UP 000000" lost
+    /// the "1" and all six zeros.
+    #[test]
+    fn chr_rom_ignores_pattern_writes() {
+        let mut ppu = PPU::new(Mirroring::HORIZONTAL);
+        ppu.chr_ram[0] = 0x5A;
+        ppu.chr_ram[0x1000] = 0x3C;
+
+        ppu.chr_is_ram = false;
+        ppu.internal_write(0x0000, 0x00);
+        ppu.internal_write(0x1000, 0x00);
+        assert_eq!(ppu.chr_ram[0], 0x5A, "CHR-ROM must ignore $0000 writes");
+        assert_eq!(ppu.chr_ram[0x1000], 0x3C, "CHR-ROM must ignore $1000 writes");
+
+        ppu.chr_is_ram = true;
+        ppu.internal_write(0x0000, 0x11);
+        assert_eq!(ppu.chr_ram[0], 0x11, "CHR RAM must accept $0000 writes");
     }
 }
