@@ -84,19 +84,19 @@ src/
 
 ## 🧪 執行測試
 
-repo 內只有單元測試；ROM 回歸與畫面 golden 是本機的私有 harness：
+repo 內只有單元測試；ROM 回歸與畫面 golden 是本機的私有 harness，由 Cargo feature
+`local_harness` 控制（預設關閉，所以 clone 下來不需要 `testing/` 也能 build 與測試）：
 
 ```bash
-# 單元測試（快，23 個，含 padding 白名單回歸）
+# 單元測試（快，29 個，含 padding 白名單與 CHR-ROM 寫入保護回歸）
 cargo test
 
 # 本機 ROM 回歸套件（需要 testing/ 與 .nes 檔）
-cargo test --release -- --ignored
+cargo test --release --features local_harness -- --ignored
 ```
 
 `testing/` 內的檔案（`rom_tests.rs`、`frame_tests.rs`、`golden_frames.txt`）透過
-`src/main.rs` 的 `#[path]` 掛進來，所以 clone 下來的 repo 可以正常 `cargo build`，
-但 `cargo test` 只會有單元測試。
+`src/main.rs` 的 `#[path]` 掛進來，只在 `local_harness` feature 開啟時編譯。
 
 `all_instrs`、`official_only`、`instr_timing`、`4-irq_and_dma`、`5-branch_delays_irq`、
 `cpu_dummy_writes_oam` 通過；`cpu_interrupts`、`ppu_vbl_nmi`、`apu_test` 的已知差距
@@ -104,9 +104,9 @@ cargo test --release -- --ignored
 
 ```bash
 # PowerShell
-$env:REGEN_GOLDEN=1; cargo test --release -- --ignored golden_frames
+$env:REGEN_GOLDEN=1; cargo test --release --features local_harness -- --ignored golden_frames
 # bash
-REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
+REGEN_GOLDEN=1 cargo test --release --features local_harness -- --ignored golden_frames
 ```
 
 ## 🏗️ 架構說明

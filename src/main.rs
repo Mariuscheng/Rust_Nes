@@ -13,10 +13,10 @@ mod renderer;
 mod rom;
 mod timing;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/frame_tests.rs"]
 mod frame_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/rom_tests.rs"]
 mod rom_tests;
 
