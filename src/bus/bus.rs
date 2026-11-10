@@ -136,6 +136,11 @@ pub struct MainBus {
 }
 
 impl MainBus {
+    /// Diagnostic access to the PPU (used by the local split-timing test).
+    pub fn ppu_ref(&self) -> &PPU {
+        &self.ppu
+    }
+
     pub fn new(
         mapper: MapperVariant,
         ram: Ram,

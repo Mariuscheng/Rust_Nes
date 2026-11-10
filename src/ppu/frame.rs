@@ -324,6 +324,10 @@ impl PPU {
 
         // Sprite 0 hit
         if spr_is_zero && bg_opaque && bg_enabled && spr_enabled && px < 255 {
+            if !self.status.sprite_zero_hit {
+                self.split_hit = (self.scanline, self.cycle);
+                self.split_hit_read = (0, 0);
+            }
             self.status.sprite_zero_hit = true;
         }
 

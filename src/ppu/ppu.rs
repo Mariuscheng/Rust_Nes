@@ -70,6 +70,12 @@ pub struct PPU {
     /// Dot at which NMI output was last enabled/disabled (D1, recorded only).
     pub nmi_enable_dot: u32,
     pub nmi_disable_dot: u32,
+    /// Scanline/cycle of the most recent sprite-0 hit, of the first $2002 read
+    /// that observed it, and of the last scroll write during a visible line.
+    /// These three make a mid-frame split testable (see rom_tests).
+    pub split_hit: (u16, u16),
+    pub split_hit_read: (u16, u16),
+    pub split_scroll_write: (u16, u16),
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -152,6 +158,9 @@ impl PPU {
             vbl_clear_dot: 0,
             nmi_enable_dot: 0,
             nmi_disable_dot: 0,
+            split_hit: (0, 0),
+            split_hit_read: (0, 0),
+            split_scroll_write: (0, 0),
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,
@@ -207,6 +216,9 @@ impl PPU {
     pub fn cpu_write(&mut self, reg_idx: u16, data: u8) {
         // Writing to any PPU register sets the entire decay register to the value written
         self.refresh_decay_bits(0xFF, data);
+        if (reg_idx == 5 || reg_idx == 6) && self.scanline < 240 {
+            self.split_scroll_write = (self.scanline, self.cycle);
+        }
         match reg_idx {
             0 => {
                 let prev_nmi_output = self.ctrl.nmi_output;
@@ -283,6 +295,9 @@ impl PPU {
                 }
                 let status_bits = self.status.as_u8();
                 let res = (status_bits & 0xE0) | (self.open_bus_latch & 0x1F);
+                if (res & 0x40) != 0 && self.split_hit_read == (0, 0) {
+                    self.split_hit_read = (self.scanline, self.cycle);
+                }
                 // Reading $2002 clears VBlank flag and also suppresses pending NMI
                 // (on real NES, reading within the NMI trigger window cancels NMI)
                 self.status.vblank = false;

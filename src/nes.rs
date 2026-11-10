@@ -80,6 +80,11 @@ impl NesConsole {
         self.bus.joypad1_mut().set_button(button, pressed);
     }
 
+    /// Diagnostic access to the PPU (used by the local split-timing test).
+    pub fn ppu(&self) -> &PPU {
+        self.bus.ppu_ref()
+    }
+
     /// Copy the PPU frame buffer (256×240) into `buf`.
     pub fn read_frame_buffer(&self, buf: &mut [u32; 256 * 240]) {
         self.bus.read_frame_buffer(buf);
