@@ -18,3 +18,7 @@ savestate.dat
 # Editor / tool backups
 *.ferrite-bak
 *.bak
+
+# Local-only test harness and design docs (not published to GitHub)
+/testing/
+/docs/

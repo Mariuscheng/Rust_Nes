@@ -20,7 +20,7 @@ use crate::cartridge::Cartridge;
 use crate::nes::NesConsole;
 use std::collections::BTreeMap;
 
-const GOLDEN_FILE: &str = "golden_frames.txt";
+const GOLDEN_FILE: &str = "testing/golden_frames.txt";
 
 #[derive(Clone, Debug)]
 struct GoldenEntry {

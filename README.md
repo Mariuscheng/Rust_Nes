@@ -75,27 +75,32 @@ src/
 ├── cartridge.rs      # Cartridge 黑盒封裝
 ├── ram/ram.rs        # 內部工作 RAM（2KB，含鏡像）
 ├── joypad.rs         # NES 手柄（strobe latch + 序列讀出）
-├── debug.rs          # $6000 測試 ROM 協議觀察者
-└── rom_tests.rs      # blargg 測試 ROM 回歸套件（#[ignore]）
+└── debug.rs          # $6000 測試 ROM 協議觀察者
 ```
+
+測試用的 harness、golden 資料、ROM 分析腳本與設計文件**不包含在 repo 內**
+（`testing/`、`docs/` 都在 `.gitignore` 裡，只存在本機）。上面 `src/` 的清單就是
+本 repo 的全部程式碼。
 
 ## 🧪 執行測試
 
+repo 內只有單元測試；ROM 回歸與畫面 golden 是本機的私有 harness：
+
 ```bash
-# 單元測試（快，23 個）
+# 單元測試（快，23 個，含 padding 白名單回歸）
 cargo test
 
-# blargg 測試 ROM 回歸套件（慢，需把 .nes 放在專案根目錄）
+# 本機 ROM 回歸套件（需要 testing/ 與 .nes 檔）
 cargo test --release -- --ignored
 ```
 
-`all_instrs`、`official_only`、`instr_timing` 應通過；`cpu_interrupts`、`ppu_vbl_nmi`、
-`apu_test` 目前是**已知時序問題**，測試會驗證失敗內容，等 cycle-accurate 核心完成後
-改成 `assert_pass` 即可。
+`testing/` 內的檔案（`rom_tests.rs`、`frame_tests.rs`、`golden_frames.txt`）透過
+`src/main.rs` 的 `#[path]` 掛進來，所以 clone 下來的 repo 可以正常 `cargo build`，
+但 `cargo test` 只會有單元測試。
 
-`golden_frames.txt` 是畫面 hash 回歸（Mario / 1942 / 1943 / Kirby's Adventure /
-MMC3 測試 ROM）。若變更是
-有意的，重新生成：
+`all_instrs`、`official_only`、`instr_timing`、`4-irq_and_dma`、`5-branch_delays_irq`、
+`cpu_dummy_writes_oam` 通過；`cpu_interrupts`、`ppu_vbl_nmi`、`apu_test` 的已知差距
+見下面「已知限制」。畫面 hash 回歸的重新生成方式：
 
 ```bash
 # PowerShell
@@ -141,7 +146,9 @@ REGEN_GOLDEN=1 cargo test --release -- --ignored golden_frames
 | VRC6 (24/26) | ✅ |
 | FME-7 (69) | ✅ |
 
-CHR 同步的設計取捨與量測見 [`docs/chr-banking.md`](docs/chr-banking.md)。
+CHR 同步的取捨：mapper 寫入後立即同步到 PPU 的 8 KiB CHR 副本，且只重抄變動的
+1 KiB block，所以 mid-frame 切 bank 會在下一次 tile fetch 生效（Kirby's Adventure
+即以此驗證）。
 
 ## ⚠️ 已知限制
 
@@ -155,20 +162,9 @@ Adventure、1942、1943 的畫面 golden 全部一致）：
 | `3-nmi_and_irq` | 失敗 | NMI/IRQ 同拍時的優先權差 1–2 cycles |
 | `apu_test` | 6/8（卡測項 7，DMC timing） | — |
 
-成因與已排除的變體（六個 PPU 側相位調整全部無效或破壞已通過的測項）整理在
-[`docs/c0-phase-notes.md`](docs/c0-phase-notes.md)。要繼續推進需要把 CPU 改成
-cycle-stepped（每 cycle 一個 state、存取有自己的 dot 位置），計畫見
-[`docs/cycle-stepped-cpu.md`](docs/cycle-stepped-cpu.md)。
-
-## 📚 設計文件
-
-- [`docs/chr-banking.md`](docs/chr-banking.md) — CHR bank 切換：refresh-on-write 與 dirty block 最佳化
-- [`docs/timing-refactor-step1.md`](docs/timing-refactor-step1.md) — per-access ticking 重構進度
-- [`docs/nmi-timing-design.md`](docs/nmi-timing-design.md) — NMI 取樣／延遲的設計與實驗
-- [`docs/cycle-exact-refactor.md`](docs/cycle-exact-refactor.md) — P1–P4 的進度與量測
-- [`docs/c0-phase-notes.md`](docs/c0-phase-notes.md) — 剩餘三個測項的相位分析與排除清單
-- [`docs/cycle-stepped-cpu.md`](docs/cycle-stepped-cpu.md) — cycle-stepped CPU 重構計畫（C0–C4）
-- [`docs/dot-offset-events.md`](docs/dot-offset-events.md) — dot-offset 事件模型（D1–D5）
+成因與已排除的變體（PPU 側六個相位調整全部無效或破壞已通過的測項）記在本機的
+`docs/c0-phase-notes.md`；要繼續推進需要把 CPU 改成 cycle-stepped（每 cycle 一個
+state、存取有自己的 dot 位置），計畫在本機的 `docs/cycle-stepped-cpu.md`。
 
 ## 📝 License
 

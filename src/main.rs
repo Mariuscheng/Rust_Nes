@@ -14,8 +14,10 @@ mod rom;
 mod timing;
 
 #[cfg(test)]
+#[path = "../testing/frame_tests.rs"]
 mod frame_tests;
 #[cfg(test)]
+#[path = "../testing/rom_tests.rs"]
 mod rom_tests;
 
 use audio::AudioOut;
