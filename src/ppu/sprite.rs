@@ -66,8 +66,10 @@ impl PPU {
                         self.scanline + 1
                     };
                     let sprite_h = if self.ctrl.sprite_size { 16 } else { 8 } as u16;
-                    let in_range =
-                        next_scanline >= sprite_y && next_scanline < sprite_y + sprite_h;
+                    // OAM stores the sprite's top line minus one, so a sprite
+                    // with Y = 24 covers scanlines 25..32.
+                    let top = sprite_y + 1;
+                    let in_range = next_scanline >= top && next_scanline < top + sprite_h;
 
                     if in_range {
                         self.oam_eval_byte = 1; // next: write Y on even, then read tile_id on next odd
@@ -162,12 +164,13 @@ impl PPU {
             let attr = self.sec_oam[base + 2];
             let sprite_x = self.sec_oam[base + 3];
 
-            // Check if sprite is visible on the NEXT scanline
-            if next_line < sprite_y || next_line >= sprite_y + sprite_h as u16 {
+            // OAM Y is the sprite's top line minus one.
+            let top = sprite_y + 1;
+            if next_line < top || next_line >= top + sprite_h as u16 {
                 continue;
             }
 
-            let row = next_line - sprite_y;
+            let row = next_line - top;
             let flip_v = (attr & 0x80) != 0;
             let flip_h = (attr & 0x40) != 0;
             let row_in_sprite = if flip_v {
