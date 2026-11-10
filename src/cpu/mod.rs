@@ -5,6 +5,7 @@ pub mod core;
 mod interrupt;
 mod registers;
 mod schedule;
+mod schedule_table;
 pub mod ops;
 pub mod stack_flags;
 pub use core::CPU;
