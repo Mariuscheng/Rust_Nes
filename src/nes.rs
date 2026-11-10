@@ -165,6 +165,24 @@ impl NesConsole {
         self.timing_step_count += 1;
     }
 
+    /// Advance the machine by exactly `cycles` CPU cycles, never splitting an
+    /// instruction.
+    ///
+    /// This is the cycle-oriented entry point the timing tests want: instead of
+    /// "run one frame and see what happened", a test can say "run 29831 cycles
+    /// and check the frame IRQ flag". The engine still executes whole
+    /// instructions internally (that is the remaining piece of the
+    /// schedule-driven refactor), so the count is the closest instruction
+    /// boundary at or after the request.
+    pub fn step_cycles(&mut self, cycles: u64) -> u64 {
+        let mut done = 0u64;
+        while done < cycles {
+            self.step();
+            done += self.cpu.last_cycles as u64;
+        }
+        done
+    }
+
     /// Step until a new frame is completed.
     /// Returns `true` if a new frame was rendered, with callback invoked.
     /// Returns `false` if no frame completed yet (should not happen in normal operation).
