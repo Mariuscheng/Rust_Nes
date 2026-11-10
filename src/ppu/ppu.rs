@@ -78,6 +78,8 @@ pub struct PPU {
     pub split_scroll_write: (u16, u16),
     /// `(t, v, x)` captured at the last visible-line scroll write.
     pub split_write_state: (u16, u16, u8),
+    /// Fine-X latched at cycle 1 of each of the first 40 scanlines (diagnostic).
+    pub row_x: [u8; 40],
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -164,6 +166,7 @@ impl PPU {
             split_hit_read: (0, 0),
             split_scroll_write: (0, 0),
             split_write_state: (0, 0, 0),
+            row_x: [0; 40],
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,

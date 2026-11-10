@@ -53,6 +53,9 @@ impl PPU {
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
+            if self.cycle == 1 && self.scanline < 40 {
+                self.row_x[self.scanline as usize] = self.x;
+            }
             let is_visible_line = self.scanline < 240;
             let is_pre_render = self.scanline == 261;
             let is_render_line = is_visible_line || is_pre_render;
