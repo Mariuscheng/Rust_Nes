@@ -7,7 +7,10 @@ use super::Mapper;
 pub struct Mapper5 {
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
-    prg_ram: [u8; 65536], // MMC5 can have up to 64KB
+    /// MMC5 can have up to 64 KiB of PRG RAM. Fixed capacity with a known size,
+    /// so it lives on the heap: otherwise every Cartridge/MainBus would carry
+    /// 64 KiB inline just because this enum variant exists.
+    prg_ram: Box<[u8; 65536]>,
     prg_mode: u8,
     chr_mode: u8,
     prg_banks: [u8; 5],
@@ -34,7 +37,10 @@ impl Mapper5 {
         let mut mapper = Self {
             prg_rom,
             chr_rom,
-            prg_ram: [0; 65536],
+            prg_ram: vec![0u8; 65536]
+                .into_boxed_slice()
+                .try_into()
+                .expect("fixed 64 KiB PRG RAM"),
             prg_mode: 0,
             chr_mode: 0,
             prg_banks: [0; 5],
@@ -51,7 +57,7 @@ impl Mapper5 {
             pulse_b_enabled: false,
         };
         if battery {
-            super::super::mapper::load_battery_save("mmc5", &mut mapper.prg_ram);
+            super::super::mapper::load_battery_save("mmc5", &mut *mapper.prg_ram);
         }
         mapper
     }
@@ -180,7 +186,7 @@ impl Mapper for Mapper5 {
         write_u8_vec(&mut v, self.chr_mode);
         v.extend_from_slice(&self.prg_banks);
         v.extend_from_slice(&self.chr_banks);
-        v.extend_from_slice(&self.prg_ram);
+        v.extend_from_slice(&self.prg_ram[..]);
         v
     }
 
