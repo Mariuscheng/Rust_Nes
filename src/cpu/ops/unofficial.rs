@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::addressing::{get_operand_address_with_page, read_operand, read_operand_rmw};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
@@ -9,7 +9,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 /// SLO: ASL memory, then ORA A,memory
 pub(crate) fn op_slo(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -32,7 +32,7 @@ pub(crate) fn op_slo(
 /// RLA: ROL memory, then AND A,memory
 pub(crate) fn op_rla(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -55,7 +55,7 @@ pub(crate) fn op_rla(
 /// SRE: LSR memory, then EOR A,memory
 pub(crate) fn op_sre(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -77,7 +77,7 @@ pub(crate) fn op_sre(
 /// RRA: ROR memory, then ADC A,memory
 pub(crate) fn op_rra(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -109,7 +109,7 @@ pub(crate) fn op_rra(
 /// SAX: Store A & X to memory
 pub(crate) fn op_sax(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -127,7 +127,7 @@ pub(crate) fn op_sax(
 /// LAX: Load A and X from memory (both get the same value)
 pub(crate) fn op_lax(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -142,7 +142,7 @@ pub(crate) fn op_lax(
 /// DCP: DEC memory, then CMP A,memory
 pub(crate) fn op_dcp(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -163,7 +163,7 @@ pub(crate) fn op_dcp(
 /// ISC: INC memory, then SBC A,memory
 pub(crate) fn op_isc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -192,7 +192,7 @@ pub(crate) fn op_isc(
 /// ANC: AND immediate, then copy bit 7 to carry
 pub(crate) fn op_anc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -206,7 +206,7 @@ pub(crate) fn op_anc(
 /// ALR: AND immediate, then LSR A
 pub(crate) fn op_alr(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -221,7 +221,7 @@ pub(crate) fn op_alr(
 /// ARR: AND immediate, then ROR A (with special carry/overflow behavior)
 pub(crate) fn op_arr(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -243,7 +243,7 @@ pub(crate) fn op_arr(
 /// AXS: A & X, store into X, then subtract immediate (store result in X)
 pub(crate) fn op_axs(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -258,7 +258,7 @@ pub(crate) fn op_axs(
 /// ANX: A & X & imm -> A, X (also known as ATX/XAA)
 pub(crate) fn op_anx(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -272,7 +272,7 @@ pub(crate) fn op_anx(
 /// Address does NOT cross page: hi stays as operand hi byte, only lo + X wraps.
 pub(crate) fn op_sya(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -289,7 +289,7 @@ pub(crate) fn op_sya(
 /// Address does NOT cross page: hi stays as operand hi byte, only lo + Y wraps.
 pub(crate) fn op_sxa(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -309,7 +309,7 @@ pub(crate) fn op_sxa(
 /// opcodes never take the page-cross cycle penalty.
 pub(crate) fn op_ahx(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -337,7 +337,7 @@ pub(crate) fn op_ahx(
 /// `A & (high byte + 1)` at abs,Y with the same broken-address behaviour.
 pub(crate) fn op_tas(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -355,7 +355,7 @@ pub(crate) fn op_tas(
 /// LAS: LDA abs,Y + TAX + TXS (opcode 0xBB)
 pub(crate) fn op_las(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -373,7 +373,7 @@ pub(crate) fn op_las(
 /// Unlike the original NMOS 6502, they do NOT halt the CPU.
 pub(crate) fn op_kil(
     _cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {

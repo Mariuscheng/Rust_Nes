@@ -10,7 +10,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::BusInterface;
+    use crate::bus::{BusInterface, CpuBus};
     use crate::cpu::CPU;
 
     /// Diagnostic: print the size of every long-lived emulator struct.
@@ -57,6 +57,29 @@ mod tests {
                 cpu_pc: 0,
                 cycles: 0,
             }
+        }
+    }
+    impl CpuBus for DummyBus {
+        fn read(&mut self, addr: u16) -> u8 {
+            BusInterface::read(self, addr)
+        }
+        fn write(&mut self, addr: u16, data: u8) {
+            BusInterface::write(self, addr, data)
+        }
+        fn tick(&mut self) -> bool {
+            BusInterface::tick(self)
+        }
+        fn set_cpu_pc(&mut self, pc: u16) {
+            BusInterface::set_cpu_pc(self, pc)
+        }
+        fn take_immediate_stolen_cycles(&mut self) -> u16 {
+            BusInterface::take_immediate_stolen_cycles(self)
+        }
+        fn cpu_cycles(&self) -> u64 {
+            BusInterface::cpu_cycles(self)
+        }
+        fn take_nmi_edge(&mut self) -> bool {
+            false
         }
     }
     impl BusInterface for DummyBus {

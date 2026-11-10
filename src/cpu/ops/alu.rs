@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::addressing::{get_operand_address_with_page, read_operand};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
@@ -8,7 +8,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 pub(crate) fn op_ora(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -21,7 +21,7 @@ pub(crate) fn op_ora(
 
 pub(crate) fn op_and(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -34,7 +34,7 @@ pub(crate) fn op_and(
 
 pub(crate) fn op_eor(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -47,7 +47,7 @@ pub(crate) fn op_eor(
 
 pub(crate) fn op_adc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -69,7 +69,7 @@ pub(crate) fn op_adc(
 
 pub(crate) fn op_sbc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -95,7 +95,7 @@ pub(crate) fn op_sbc(
 
 pub(crate) fn op_cmp(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -113,7 +113,7 @@ pub(crate) fn op_cmp(
 
 pub(crate) fn op_cpx(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -127,7 +127,7 @@ pub(crate) fn op_cpx(
 
 pub(crate) fn op_cpy(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {

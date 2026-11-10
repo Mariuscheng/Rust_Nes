@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::decoder::{decode_opcode, Instruction};
 use crate::cpu::ops;
 
@@ -72,7 +72,7 @@ impl CPU {
 
     /// Execute one CPU instruction. Returns consumed CPU cycles.
     /// The caller is responsible for PPU ticking and interrupt dispatch.
-    pub fn step(&mut self, bus: &mut dyn BusInterface) -> u16 {
+    pub fn step(&mut self, bus: &mut dyn CpuBus) -> u16 {
         let current_pc = self.pc;
         let start_cycles = bus.cpu_cycles();
 

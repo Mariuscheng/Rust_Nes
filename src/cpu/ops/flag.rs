@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 use crate::cpu::stack_flags::update_zero_and_negative_flags;
@@ -7,7 +7,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 pub(crate) fn op_sei(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -19,7 +19,7 @@ pub(crate) fn op_sei(
 
 pub(crate) fn op_sec(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -28,7 +28,7 @@ pub(crate) fn op_sec(
 
 pub(crate) fn op_clc(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -37,7 +37,7 @@ pub(crate) fn op_clc(
 
 pub(crate) fn op_cld(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -46,7 +46,7 @@ pub(crate) fn op_cld(
 
 pub(crate) fn op_cli(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -57,7 +57,7 @@ pub(crate) fn op_cli(
 
 pub(crate) fn op_clv(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -66,7 +66,7 @@ pub(crate) fn op_clv(
 
 pub(crate) fn op_sed(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -75,7 +75,7 @@ pub(crate) fn op_sed(
 
 pub(crate) fn op_txs(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -84,7 +84,7 @@ pub(crate) fn op_txs(
 
 pub(crate) fn op_tsx(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {

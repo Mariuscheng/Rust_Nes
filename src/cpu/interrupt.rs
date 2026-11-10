@@ -10,14 +10,14 @@
 //! the cycle positions are explicit rather than implied by call order.
 
 use super::core::CPU;
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::constants::{
     IRQ_VECTOR_HI, IRQ_VECTOR_LO, NMI_VECTOR_HI, NMI_VECTOR_LO, RESET_VECTOR_HI, RESET_VECTOR_LO,
 };
 
 impl CPU {
     /// Power-on / reset: jump through the reset vector.
-    pub fn reset(&mut self, bus: &mut impl BusInterface) {
+    pub fn reset(&mut self, bus: &mut impl CpuBus) {
         let lo = bus.read(RESET_VECTOR_LO) as u16;
         let hi = bus.read(RESET_VECTOR_HI) as u16;
         self.pc = (hi << 8) | lo;
@@ -32,7 +32,7 @@ impl CPU {
     }
 
     /// Execute NMI (non-maskable interrupt). Returns the 7 CPU cycles consumed.
-    pub fn nmi(&mut self, bus: &mut dyn BusInterface) -> u16 {
+    pub fn nmi(&mut self, bus: &mut dyn CpuBus) -> u16 {
         // c1-c2: internal cycles (dummy reads of the interrupted PC).
         let _ = bus.read(self.pc);
         let _ = bus.read(self.pc.wrapping_add(1));
@@ -57,7 +57,7 @@ impl CPU {
 
     /// IRQ: maskable interrupt. The caller has already decided via
     /// [`CPU::irq_pending`] that the poll takes it.
-    pub fn irq(&mut self, bus: &mut dyn BusInterface) {
+    pub fn irq(&mut self, bus: &mut dyn CpuBus) {
         // c1-c2: internal cycles (dummy reads of the interrupted PC).
         let _ = bus.read(self.pc);
         let _ = bus.read(self.pc.wrapping_add(1));
@@ -80,11 +80,11 @@ impl CPU {
         self.last_cycles = 7;
     }
 
-    fn stack_push_u16(&mut self, bus: &mut dyn BusInterface, data: u16) {
+    fn stack_push_u16(&mut self, bus: &mut dyn CpuBus, data: u16) {
         crate::cpu::stack_flags::stack_push_u16(self, bus, data);
     }
 
-    fn stack_push_u8(&mut self, bus: &mut dyn BusInterface, data: u8) {
+    fn stack_push_u8(&mut self, bus: &mut dyn CpuBus, data: u8) {
         crate::cpu::stack_flags::stack_push_u8(self, bus, data);
     }
 }

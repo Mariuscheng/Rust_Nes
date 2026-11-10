@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 use crate::cpu::stack_flags::update_zero_and_negative_flags;
@@ -7,7 +7,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 pub(crate) fn op_pha(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -18,7 +18,7 @@ pub(crate) fn op_pha(
 
 pub(crate) fn op_pla(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -31,7 +31,7 @@ pub(crate) fn op_pla(
 
 pub(crate) fn op_php(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -42,7 +42,7 @@ pub(crate) fn op_php(
 
 pub(crate) fn op_plp(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {

@@ -5,6 +5,33 @@ use crate::ppu::PPU;
 use crate::ram::Ram;
 use crate::rom::MapperVariant;
 
+/// The view of the machine the CPU is allowed to see.
+///
+/// Split out of [`BusInterface`] on purpose: the CPU may read/write memory,
+/// burn a cycle, learn how many cycles have elapsed, be told its new PC (an
+/// open-bus side effect) and consume a latched NMI edge. Everything else —
+/// DMA requests, PPU line history, mapper hooks — is system bookkeeping the
+/// CPU has no business touching, and keeping it out of this trait makes the
+/// dependency visible at the type level.
+pub trait CpuBus {
+    /// Read one byte. The machine advances one CPU cycle first.
+    fn read(&mut self, addr: u16) -> u8;
+    /// Write one byte (same cycle semantics as [`CpuBus::read`]).
+    fn write(&mut self, addr: u16, data: u8);
+    /// One CPU cycle with no bus access (implied-instruction internals,
+    /// interrupt sequences). Returns true when the PPU NMI line is asserted.
+    fn tick(&mut self) -> bool;
+    /// Open-bus bookkeeping: the CPU is about to fetch from `pc`.
+    fn set_cpu_pc(&mut self, pc: u16);
+    /// DMC stalls incurred since the last call (paid as extra cycles).
+    fn take_immediate_stolen_cycles(&mut self) -> u16;
+    /// Cycles elapsed so far, used to top an instruction up to its budget.
+    fn cpu_cycles(&self) -> u64;
+    /// Consume a latched NMI edge. The NMI input is edge-sensitive, so an edge
+    /// seen by the CPU survives until the interrupt is serviced.
+    fn take_nmi_edge(&mut self) -> bool;
+}
+
 pub trait BusInterface {
     /// Read one byte from the bus.
     ///
@@ -28,7 +55,7 @@ pub trait BusInterface {
     fn tick_with_dots(&mut self, dots: u16) -> bool {
         let mut nmi = false;
         for _ in 0..dots {
-            nmi |= self.tick();
+            nmi |= BusInterface::tick(self);
         }
         nmi
     }
@@ -211,15 +238,15 @@ impl MainBus {
         let extra = ((self.cpu_cycle_count & 1) ^ 1) as u16;
 
         // Halt/alignment cycles before the first byte.
-        self.tick();
+        BusInterface::tick(self);
         if extra == 1 {
-            self.tick();
+            BusInterface::tick(self);
         }
 
         for i in 0..256u16 {
-            self.tick(); // read cycle
+            BusInterface::tick(self); // read cycle
             let val = self.peek(base.wrapping_add(i));
-            self.tick(); // write cycle
+            BusInterface::tick(self); // write cycle
             self.ppu.oam[i as usize] = val;
         }
 
@@ -369,9 +396,32 @@ pub struct PpuSnapshot {
     pub chr_ram: [u8; 8192],
 }
 
+impl CpuBus for MainBus {
+    fn read(&mut self, addr: u16) -> u8 {
+        BusInterface::read(self, addr)
+    }
+    fn write(&mut self, addr: u16, data: u8) {
+        BusInterface::write(self, addr, data)
+    }
+    fn tick(&mut self) -> bool {
+        BusInterface::tick(self)
+    }
+    fn set_cpu_pc(&mut self, pc: u16) {
+        BusInterface::set_cpu_pc(self, pc)
+    }
+    fn take_immediate_stolen_cycles(&mut self) -> u16 {
+        BusInterface::take_immediate_stolen_cycles(self)
+    }
+    fn cpu_cycles(&self) -> u64 {
+        BusInterface::cpu_cycles(self)
+    }
+    fn take_nmi_edge(&mut self) -> bool {
+        BusInterface::take_nmi_edge(self)
+    }
+}
 impl BusInterface for MainBus {
     fn read(&mut self, addr: u16) -> u8 {
-        self.tick();
+        BusInterface::tick(self);
         match addr {
             0x0000..=0x1FFF => {
                 let val = self.ram.read(addr);
@@ -435,7 +485,7 @@ impl BusInterface for MainBus {
     }
 
     fn write(&mut self, addr: u16, data: u8) {
-        self.tick();
+        BusInterface::tick(self);
         self.open_bus_latch = data;
         match addr {
             0x0000..=0x1FFF => self.ram.write(addr, data),
@@ -569,6 +619,7 @@ impl BusInterface for MainBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::bus::BusInterface as _;
     use crate::rom::Mirroring;
     use crate::rom::mappers::Mapper0;
 
@@ -589,19 +640,19 @@ mod tests {
         let mut bus = test_bus();
 
         for i in 0..256u16 {
-            bus.write(0x0200 + i, i as u8);
+            BusInterface::write(&mut bus, 0x0200 + i, i as u8);
         }
 
         // Writing $4014 only queues the transfer; the CPU keeps running.
-        bus.write(0x4014, 0x02);
+        BusInterface::write(&mut bus, 0x4014, 0x02);
         assert_eq!(bus.take_dma_request(), Some(0x02));
         assert!(bus.ppu.oam.iter().all(|&b| b == 0));
 
         // Servicing it halts the CPU for 513/514 cycles and copies OAM.
-        let before = bus.cpu_cycles();
+        let before = BusInterface::cpu_cycles(&bus);
         let cycles = bus.run_dma(0x02);
         assert!(cycles == 513 || cycles == 514, "unexpected DMA length {cycles}");
-        assert_eq!(bus.cpu_cycles() - before, cycles as u64);
+        assert_eq!(BusInterface::cpu_cycles(&bus) - before, cycles as u64);
         for i in 0..256usize {
             assert_eq!(bus.ppu.oam[i], i as u8, "OAM byte {i}");
         }
@@ -614,8 +665,8 @@ mod tests {
         assert_eq!(bus.ppu.chr_ram[0x1000], 0);
 
         // MMC3 CHR mode 0: select CHR register 2, then point it at bank 5.
-        bus.write(0x8000, 2);
-        bus.write(0x8001, 5);
+        BusInterface::write(&mut bus, 0x8000, 2);
+        BusInterface::write(&mut bus, 0x8001, 5);
         assert_eq!(bus.ppu.chr_ram[0x1000], 5);
     }
 
@@ -654,19 +705,19 @@ mod tests {
         bus.ppu.chr_ram[0x1000] = 0xAA;
 
         // IRQ latch / reload / enable never change CHR banks: no copy at all.
-        bus.write(0xC000, 0x10);
-        bus.write(0xC001, 0);
-        bus.write(0xE001, 0);
+        BusInterface::write(&mut bus, 0xC000, 0x10);
+        BusInterface::write(&mut bus, 0xC001, 0);
+        BusInterface::write(&mut bus, 0xE001, 0);
         assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
         assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
 
         // Selecting a register changes nothing by itself.
-        bus.write(0x8000, 2);
+        BusInterface::write(&mut bus, 0x8000, 2);
         assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
         assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
 
         // R2 feeds $1000-$1FFF, so only that half is re-copied.
-        bus.write(0x8001, 5);
+        BusInterface::write(&mut bus, 0x8001, 5);
         assert_eq!(bus.ppu.chr_ram[0x1000], 5);
         assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
     }

@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
 
@@ -22,7 +22,7 @@ impl AddrResult {
 /// On the 6502, indexed addressing modes that cross a page first read from
 /// the wrong (pre-correction) address. That dummy read has side effects
 /// (e.g. clearing PPU_STATUS latch).
-pub(crate) fn read_operand(bus: &mut dyn BusInterface, res: &AddrResult) -> u8 {
+pub(crate) fn read_operand(bus: &mut dyn CpuBus, res: &AddrResult) -> u8 {
     if let Some(dummy) = res.dummy_addr {
         bus.read(dummy);
     }
@@ -33,7 +33,7 @@ pub(crate) fn read_operand(bus: &mut dyn BusInterface, res: &AddrResult) -> u8 {
 /// always spend a cycle on the un-indexed address, even when the index does not
 /// cross a page, so the dummy read happens for every RMW access.
 pub(crate) fn read_operand_rmw(
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     res: &AddrResult,
     mode: &AddressMode,
 ) -> u8 {
@@ -52,7 +52,7 @@ pub(crate) fn read_operand_rmw(
 pub(crate) fn get_operand_address_with_page(
     cpu: &CPU,
     mode: &AddressMode,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     param_ptr: u16,
 ) -> AddrResult {
     let res = match mode {
@@ -157,7 +157,7 @@ pub(crate) fn get_operand_address_with_page(
 pub(crate) fn get_operand_address(
     cpu: &CPU,
     mode: &AddressMode,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     param_ptr: u16,
 ) -> u16 {
     get_operand_address_with_page(cpu, mode, bus, param_ptr).addr

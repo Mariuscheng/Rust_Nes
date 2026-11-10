@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::addressing::{get_operand_address_with_page, read_operand_rmw};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
@@ -8,7 +8,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 pub(crate) fn op_asl(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -33,7 +33,7 @@ pub(crate) fn op_asl(
 
 pub(crate) fn op_lsr(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -58,7 +58,7 @@ pub(crate) fn op_lsr(
 
 pub(crate) fn op_rol(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -84,7 +84,7 @@ pub(crate) fn op_rol(
 
 pub(crate) fn op_ror(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {

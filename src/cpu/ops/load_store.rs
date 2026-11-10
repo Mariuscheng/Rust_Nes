@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::addressing::{get_operand_address_with_page, read_operand};
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
@@ -8,7 +8,7 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 pub(crate) fn op_ldx(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -21,7 +21,7 @@ pub(crate) fn op_ldx(
 
 pub(crate) fn op_lda(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -33,7 +33,7 @@ pub(crate) fn op_lda(
 
 pub(crate) fn op_ldy(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -45,7 +45,7 @@ pub(crate) fn op_ldy(
 
 pub(crate) fn op_sta(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -62,7 +62,7 @@ pub(crate) fn op_sta(
 
 pub(crate) fn op_stx(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -77,7 +77,7 @@ pub(crate) fn op_stx(
 
 pub(crate) fn op_sty(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -94,7 +94,7 @@ pub(crate) fn op_sty(
 
 pub(crate) fn op_inx(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -104,7 +104,7 @@ pub(crate) fn op_inx(
 
 pub(crate) fn op_iny(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -114,7 +114,7 @@ pub(crate) fn op_iny(
 
 pub(crate) fn op_dex(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -124,7 +124,7 @@ pub(crate) fn op_dex(
 
 pub(crate) fn op_dey(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -134,7 +134,7 @@ pub(crate) fn op_dey(
 
 pub(crate) fn op_tax(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -144,7 +144,7 @@ pub(crate) fn op_tax(
 
 pub(crate) fn op_tay(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -154,7 +154,7 @@ pub(crate) fn op_tay(
 
 pub(crate) fn op_txa(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {
@@ -164,7 +164,7 @@ pub(crate) fn op_txa(
 
 pub(crate) fn op_tya(
     cpu: &mut CPU,
-    _bus: &mut dyn BusInterface,
+    _bus: &mut dyn CpuBus,
     _mode: AddressMode,
     _current_pc: u16,
 ) {

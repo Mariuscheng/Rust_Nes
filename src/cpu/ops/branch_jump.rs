@@ -1,4 +1,4 @@
-use crate::bus::BusInterface;
+use crate::bus::CpuBus;
 use crate::cpu::addressing::get_operand_address;
 use crate::cpu::core::CPU;
 use crate::cpu::decoder::AddressMode;
@@ -7,7 +7,7 @@ use crate::cpu::decoder::AddressMode;
 
 pub(crate) fn op_jsr(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
@@ -21,7 +21,7 @@ pub(crate) fn op_jsr(
 
 pub(crate) fn op_rts(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _: AddressMode,
     current_pc: u16,
 ) {
@@ -33,7 +33,7 @@ pub(crate) fn op_rts(
 
 pub(crate) fn op_brk(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) {
@@ -78,7 +78,7 @@ pub(crate) fn op_brk(
 
 pub(crate) fn op_rti(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _: AddressMode,
     current_pc: u16,
 ) {
@@ -101,7 +101,7 @@ pub(crate) fn op_rti(
 /// cycle earlier (that is why a taken branch delays an IRQ by one instruction).
 pub(crate) fn op_branch(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     current_pc: u16,
     condition: bool,
 ) -> u8 {
@@ -128,7 +128,7 @@ pub(crate) fn op_branch(
 
 pub(crate) fn op_bpl(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -137,7 +137,7 @@ pub(crate) fn op_bpl(
 
 pub(crate) fn op_bmi(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -146,7 +146,7 @@ pub(crate) fn op_bmi(
 
 pub(crate) fn op_bvc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -155,7 +155,7 @@ pub(crate) fn op_bvc(
 
 pub(crate) fn op_bne(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -164,7 +164,7 @@ pub(crate) fn op_bne(
 
 pub(crate) fn op_bcs(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -173,7 +173,7 @@ pub(crate) fn op_bcs(
 
 pub(crate) fn op_beq(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -182,7 +182,7 @@ pub(crate) fn op_beq(
 
 pub(crate) fn op_bvs(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -191,7 +191,7 @@ pub(crate) fn op_bvs(
 
 pub(crate) fn op_bcc(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     _mode: AddressMode,
     current_pc: u16,
 ) -> u8 {
@@ -200,7 +200,7 @@ pub(crate) fn op_bcc(
 
 pub(crate) fn op_jmp(
     cpu: &mut CPU,
-    bus: &mut dyn BusInterface,
+    bus: &mut dyn CpuBus,
     mode: AddressMode,
     current_pc: u16,
 ) {
