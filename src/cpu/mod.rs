@@ -4,6 +4,7 @@ pub mod decoder;
 pub mod core;
 mod interrupt;
 mod registers;
+mod schedule;
 pub mod ops;
 pub mod stack_flags;
 pub use core::CPU;
