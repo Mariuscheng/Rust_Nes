@@ -1,8 +1,4 @@
 use crate::bus::BusInterface;
-use crate::constants::{
-    IRQ_VECTOR_HI, IRQ_VECTOR_LO, NMI_VECTOR_HI, NMI_VECTOR_LO,
-    RESET_VECTOR_HI, RESET_VECTOR_LO,
-};
 use crate::cpu::decoder::{decode_opcode, Instruction};
 use crate::cpu::ops;
 
@@ -72,19 +68,6 @@ impl CPU {
             last_cycles: 0,
             padded: [false; 256],
         }
-    }
-
-    pub fn reset(&mut self, bus: &mut impl BusInterface) {
-        let lo = bus.read(RESET_VECTOR_LO) as u16;
-        let hi = bus.read(RESET_VECTOR_HI) as u16;
-        self.pc = (hi << 8) | lo;
-    }
-
-    /// Check whether the IRQ line should be serviced by the poll at the end of
-    /// the current instruction. Uses `poll_iflag`, i.e. the I flag as it was
-    /// visible on the polling cycle (see the field docs).
-    pub fn irq_pending(&self) -> bool {
-        !self.poll_iflag
     }
 
     /// Execute one CPU instruction. Returns consumed CPU cycles.
@@ -265,61 +248,5 @@ impl CPU {
         total_cycles
     }
 
-    /// Execute NMI (non-maskable interrupt). Returns 7 for the CPU cycles consumed.
-    pub fn nmi(&mut self, bus: &mut dyn BusInterface) -> u16 {
-        // c1-c2: internal cycles (dummy reads of the interrupted PC).
-        let _ = bus.read(self.pc);
-        let _ = bus.read(self.pc.wrapping_add(1));
 
-        // c3-c5: push PC high, PC low, then status (B cleared for NMI).
-        let pc = self.pc;
-        self.stack_push_u16(bus, pc);
-        self.stack_push_u8(bus, (self.p & 0xEF) | 0x20);
-
-        // c6-c7: fetch the NMI vector.
-        let lo = bus.read(NMI_VECTOR_LO) as u16;
-        let hi = bus.read(NMI_VECTOR_HI) as u16;
-        self.pc = (hi << 8) | lo;
-
-        self.p |= 0x04;
-        self.poll_iflag = true;
-        self.poll_delay = 0;
-
-        self.last_cycles = 7;
-        7
-    }
-
-    /// IRQ: maskable interrupt. The caller has already decided via
-    /// `irq_pending()` that the poll at the end of the current instruction
-    /// takes it.
-    pub fn irq(&mut self, bus: &mut dyn BusInterface) {
-        // c1-c2: internal cycles (dummy reads of the interrupted PC).
-        let _ = bus.read(self.pc);
-        let _ = bus.read(self.pc.wrapping_add(1));
-
-        // c3-c5: push PC high, PC low, then status (B cleared).
-        let pc = self.pc;
-        self.stack_push_u16(bus, pc);
-        self.stack_push_u8(bus, (self.p & 0xEF) | 0x20);
-
-        // I flag is set once the status byte is on the stack.
-        self.p |= 0x04;
-        self.poll_iflag = true;
-        self.poll_delay = 0;
-
-        // c6-c7: fetch the IRQ vector.
-        let lo = bus.read(IRQ_VECTOR_LO) as u16;
-        let hi = bus.read(IRQ_VECTOR_HI) as u16;
-        self.pc = (hi << 8) | lo;
-
-        self.last_cycles = 7;
-    }
-
-    fn stack_push_u16(&mut self, bus: &mut dyn BusInterface, data: u16) {
-        crate::cpu::stack_flags::stack_push_u16(self, bus, data);
-    }
-
-    fn stack_push_u8(&mut self, bus: &mut dyn BusInterface, data: u8) {
-        crate::cpu::stack_flags::stack_push_u8(self, bus, data);
-    }
 }

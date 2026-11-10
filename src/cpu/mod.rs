@@ -2,6 +2,7 @@
 pub mod addressing;
 pub mod decoder;
 pub mod core;
+mod interrupt;
 mod registers;
 pub mod ops;
 pub mod stack_flags;
