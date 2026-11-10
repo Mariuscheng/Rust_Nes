@@ -219,9 +219,9 @@ impl CPU {
             // internal cycle genuinely is their last cycle may rely on this
             // (see docs/cycle-exact-refactor.md, P1).
             debug_assert!(
-                PADDING_ALLOWED.contains(&opcode_byte),
-                "opcode {:#04X} at {:#06X} is {} cycles short and is not on the \
-                 padding whitelist",
+                crate::cpu::schedule::allows_trailing(opcode_byte, total_cycles - used),
+                "opcode {:#04X} at {:#06X}: {} trailing idle cycles do not match \
+                 the schedule table",
                 opcode_byte,
                 current_pc,
                 total_cycles - used

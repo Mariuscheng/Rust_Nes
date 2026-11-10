@@ -30,6 +30,32 @@ pub const KIND_READ: u8 = 0;
 pub const KIND_WRITE: u8 = 1;
 pub const KIND_IDLE: u8 = 2;
 
+/// How many trailing idle cycles the frozen schedule expects for `opcode`.
+///
+/// This replaces the hand-maintained padding whitelist: the table already says
+/// which instructions end with an internal cycle, so the count is derived
+/// rather than listed by hand.
+pub fn expected_trailing_idles(opcode: u8) -> u16 {
+    let shape = crate::cpu::schedule_table::SHAPES[opcode as usize];
+    shape.iter().rev().take_while(|k| **k == KIND_IDLE).count() as u16
+}
+
+/// The eight conditional branches. Their shape depends on the flags (taken adds
+/// one internal cycle, a page cross another), so the frozen table stores the
+/// not-taken form and the checks allow up to two trailing idles.
+pub fn is_branch(opcode: u8) -> bool {
+    matches!(opcode, 0x10 | 0x30 | 0x50 | 0x70 | 0x90 | 0xB0 | 0xD0 | 0xF0)
+}
+
+/// Whether `trailing` idle cycles are consistent with the frozen schedule.
+pub fn allows_trailing(opcode: u8, trailing: u16) -> bool {
+    if is_branch(opcode) {
+        trailing <= 2
+    } else {
+        trailing == expected_trailing_idles(opcode)
+    }
+}
+
 pub fn kind_of(cycle: Cycle) -> u8 {
     match cycle {
         Cycle::Read(_) => KIND_READ,
@@ -40,7 +66,7 @@ pub fn kind_of(cycle: Cycle) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{kind_of, Cycle};
+    use super::{allows_trailing, is_branch, kind_of, Cycle, KIND_READ};
     use crate::bus::CpuBus;
     use crate::cpu::CPU;
 
@@ -202,17 +228,24 @@ mod tests {
         out.push_str("// Do not edit by hand: rerun that test instead.\n");
         out.push_str("pub const SHAPES: [&[u8]; 256] = [\n");
         for opcode in 0u16..=0xFF {
-            let mut cpu = CPU::new();
-            let mut bus = RecordingBus::new();
-            bus.mem[1] = 0x02;
-            bus.mem[2] = 0x00;
-            run(&mut cpu, &mut bus, 0, opcode as u8);
+            // Branches have a flag-dependent shape; store their not-taken form
+            // and let the checker allow up to two trailing idles.
+            let shape: Vec<u8> = if is_branch(opcode as u8) {
+                vec![KIND_READ, KIND_READ]
+            } else {
+                let mut cpu = CPU::new();
+                let mut bus = RecordingBus::new();
+                bus.mem[1] = 0x02;
+                bus.mem[2] = 0x00;
+                run(&mut cpu, &mut bus, 0, opcode as u8);
+                bus.log.iter().map(|c| kind_of(*c)).collect()
+            };
             out.push_str("    &[");
-            for (i, cycle) in bus.log.iter().enumerate() {
+            for (i, k) in shape.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write!(out, "{}", kind_of(*cycle)).unwrap();
+                write!(out, "{}", k).unwrap();
             }
             out.push_str("],\n");
         }
@@ -236,6 +269,19 @@ mod tests {
         for opcode in 0u16..=0xFF {
             let expected = table[opcode as usize];
             let actual = observed_shape(opcode as u8);
+            if is_branch(opcode as u8) {
+                assert_eq!(
+                    &actual[..expected.len()],
+                    expected,
+                    "opcode {opcode:#04X}: branch base shape changed"
+                );
+                let extra = (actual.len() - expected.len()) as u16;
+                assert!(
+                    allows_trailing(opcode as u8, extra),
+                    "opcode {opcode:#04X}: branch took {extra} extra cycles"
+                );
+                continue;
+            }
             assert_eq!(
                 actual, expected,
                 "opcode {opcode:#04X}: access shape changed; check the handler's \
