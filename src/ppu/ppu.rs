@@ -76,6 +76,8 @@ pub struct PPU {
     pub split_hit: (u16, u16),
     pub split_hit_read: (u16, u16),
     pub split_scroll_write: (u16, u16),
+    /// `(t, v, x)` captured at the last visible-line scroll write.
+    pub split_write_state: (u16, u16, u8),
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
@@ -161,6 +163,7 @@ impl PPU {
             split_hit: (0, 0),
             split_hit_read: (0, 0),
             split_scroll_write: (0, 0),
+            split_write_state: (0, 0, 0),
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
             bg_shift_lo: 0,
@@ -218,6 +221,7 @@ impl PPU {
         self.refresh_decay_bits(0xFF, data);
         if (reg_idx == 5 || reg_idx == 6) && self.scanline < 240 {
             self.split_scroll_write = (self.scanline, self.cycle);
+            self.split_write_state = (self.t, self.v, self.x);
         }
         match reg_idx {
             0 => {
