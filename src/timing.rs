@@ -13,19 +13,47 @@ mod tests {
     use crate::bus::BusInterface;
     use crate::cpu::CPU;
 
+    /// Diagnostic: print the size of every long-lived emulator struct.
+    ///
+    /// `cargo test report_struct_sizes -- --nocapture`
+    ///
+    /// Fixed-capacity buffers that are large and get moved (the PPU frame
+    /// buffer, this test bus's memory) are `Box<[T; N]>` so the containing
+    /// struct only stores a pointer.
+    #[test]
+    fn report_struct_sizes() {
+        use std::mem::size_of;
+        eprintln!("DummyBus.mem   {} B (heap)", 65536);
+        eprintln!("Box<[u8; 64K]> {} B (pointer)", size_of::<Box<[u8; 65536]>>());
+        eprintln!("DummyBus       {} B", size_of::<DummyBus>());
+        eprintln!("CPU            {} B", size_of::<crate::cpu::CPU>());
+        eprintln!("PPU            {} B", size_of::<crate::ppu::PPU>());
+        eprintln!("MainBus        {} B", size_of::<crate::bus::MainBus>());
+        eprintln!("NesConsole     {} B", size_of::<crate::nes::NesConsole>());
+        eprintln!("Cartridge      {} B", size_of::<crate::cartridge::Cartridge>());
+    }
+
     /// Minimal bus implementation for testing timing logic.
     ///
     /// `cycles` must advance on every access/tick: `CPU::step` relies on
     /// `cpu_cycles()` to know how much of the instruction's budget is spent.
     struct DummyBus {
-        mem: [u8; 65536],
+        /// Fixed capacity, known size: 64 KiB lives on the heap so the struct
+        /// itself stays pointer-sized.
+        mem: Box<[u8; 65536]>,
         cpu_pc: u16,
         cycles: u64,
     }
     impl DummyBus {
         fn new() -> Self {
+            // Build on the heap directly; `Box::new([0u8; 65536])` would create
+            // the array on the stack first in debug builds.
+            let mem: Box<[u8; 65536]> = vec![0u8; 65536]
+                .into_boxed_slice()
+                .try_into()
+                .expect("fixed 64 KiB");
             Self {
-                mem: [0; 65536],
+                mem,
                 cpu_pc: 0,
                 cycles: 0,
             }
