@@ -619,7 +619,6 @@ impl BusInterface for MainBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::bus::BusInterface as _;
     use crate::rom::Mirroring;
     use crate::rom::mappers::Mapper0;
 

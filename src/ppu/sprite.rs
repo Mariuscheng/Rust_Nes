@@ -3,6 +3,22 @@
 
 use super::ppu::PPU;
 
+/// Pattern-table base address used by a sprite tile.
+///
+/// 8x8 sprites read from the table selected by PPUCTRL bit 3. In 8x16 mode that
+/// bit is ignored: the tile index's low bit picks the 4 KiB bank instead, and
+/// the index itself is masked to even so the pair `$00/$01` maps to `$0000`
+/// tiles 0-1, `$02/$03` to `$0000` tiles 2-3, `$FE/$FF` to `$1000` tiles
+/// `$FE/$FF`, and so on.
+pub(super) fn sprite_pattern_bank(sprite_h: u16, tile_id: u8, ctrl_bank: u16) -> usize {
+    let bank = if sprite_h == 16 {
+        if (tile_id & 0x01) != 0 { 0x1000 } else { 0x0000 }
+    } else {
+        ctrl_bank
+    };
+    bank as usize
+}
+
 impl PPU {
     // ── OAM evaluation (for NEXT scanline) ──
     // Evaluates sprites on the CURRENT scanline to determine which ones
@@ -171,11 +187,11 @@ impl PPU {
                 (tile_id as u16, row_in_sprite as u8)
             };
 
-            let bank = if sprite_h == 16 {
-                if (tile_id & 0x01) != 0 { 0x1000 } else { 0x0000 }
-            } else {
-                self.ctrl.sprite_pattern_addr
-            } as usize;
+            let bank = sprite_pattern_bank(
+                sprite_h,
+                tile_id,
+                self.ctrl.sprite_pattern_addr,
+            );
 
             let lo = self.chr_ram[bank + tile_num as usize * 16 + row_in_tile as usize];
             let hi = self.chr_ram[bank + tile_num as usize * 16 + row_in_tile as usize + 8];
@@ -199,5 +215,31 @@ impl PPU {
 
             self.sprite_count_render += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sprite_pattern_bank;
+
+    #[test]
+    fn eight_by_eight_sprites_follow_ppuctrl() {
+        // PPUCTRL bit 3 picks the table for every sprite.
+        assert_eq!(sprite_pattern_bank(8, 0x00, 0x0000), 0x0000);
+        assert_eq!(sprite_pattern_bank(8, 0x00, 0x1000), 0x1000);
+        assert_eq!(sprite_pattern_bank(8, 0xFE, 0x0000), 0x0000);
+        assert_eq!(sprite_pattern_bank(8, 0xFF, 0x1000), 0x1000);
+    }
+
+    #[test]
+    fn eight_by_sixteen_sprites_ignore_ppuctrl() {
+        // Hardware ignores PPUCTRL bit 3 here: the tile index's low bit selects
+        // the bank, so one sprite may span both 4 KiB tables.
+        assert_eq!(sprite_pattern_bank(16, 0x00, 0x1000), 0x0000);
+        assert_eq!(sprite_pattern_bank(16, 0x01, 0x0000), 0x1000);
+        assert_eq!(sprite_pattern_bank(16, 0x02, 0x1000), 0x0000);
+        assert_eq!(sprite_pattern_bank(16, 0x03, 0x0000), 0x1000);
+        assert_eq!(sprite_pattern_bank(16, 0xFE, 0x1000), 0x0000);
+        assert_eq!(sprite_pattern_bank(16, 0xFF, 0x0000), 0x1000);
     }
 }
