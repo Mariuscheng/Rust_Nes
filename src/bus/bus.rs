@@ -493,7 +493,7 @@ impl BusInterface for MainBus {
         let irq = self.irq_asserted();
         self.irq_before_tick = irq;
         self.cpu_cycle_count += 1;
-        self.ppu.tick(3);
+        self.ppu.tick(dots);
         self.clock_apu();
         let a12_ticks = self.ppu.a12_rising_count;
         self.ppu.a12_rising_count = 0;
