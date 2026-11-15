@@ -25,9 +25,9 @@ pub const TRIANGLE_SEQUENCE: [u8; 32] = [
     13, 14, 15,
 ];
 
-/// DMC 頻率週期表（16 entries, NTSC）
+/// DMC 頻率週期表（16 entries, NTSC, CPU cycles）
 pub const DMC_PERIOD_TABLE: [u16; 16] = [
-    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 85, 72, 54,
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
 ];
 
 /// NTSC NES CPU 主頻率（分子，用於 sample rate 轉換）
