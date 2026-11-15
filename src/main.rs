@@ -213,6 +213,41 @@ fn run_with_window(console: &mut NesConsole) {
             console.load_state("savestate.dat");
             //println!("State loaded from savestate.dat");
         }
+        // F8: write the current frame plus sprite data for offline analysis.
+        if window.is_key_down(Key::F8) {
+            let ppu = console.ppu();
+            let mut text = String::new();
+            text.push_str(&format!(
+                "frame={} mask={:02X} ctrl.spr_pt={:04X}\n",
+                ppu.frame, ppu.mask, ppu.ctrl.sprite_pattern_addr
+            ));
+            for i in 0..64usize {
+                let b = i * 4;
+                let y = ppu.oam[b];
+                if y >= 0xEF {
+                    continue;
+                }
+                text.push_str(&format!(
+                    "spr{i:02} y={y:3} tile={:02X} attr={:02X} x={:3}\n",
+                    ppu.oam[b + 1],
+                    ppu.oam[b + 2],
+                    ppu.oam[b + 3]
+                ));
+            }
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            std::fs::write(format!("dq_shot_{n}.txt"), &text).ok();
+            let mut ppm = Vec::with_capacity(256 * 240 * 3 + 16);
+            ppm.extend_from_slice(b"P6\n256 240\n255\n");
+            for &px in frame_buf.iter() {
+                ppm.push(((px >> 16) & 0xFF) as u8);
+                ppm.push(((px >> 8) & 0xFF) as u8);
+                ppm.push((px & 0xFF) as u8);
+            }
+            std::fs::write(format!("dq_shot_{n}.ppm"), &ppm).ok();
+        }
     }
 }
 

@@ -22,3 +22,6 @@ savestate.dat
 # Local-only test harness and design docs (not published to GitHub)
 /testing/
 /docs/
+
+# F8 debug snapshots
+/dq_shot_*
