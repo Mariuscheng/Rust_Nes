@@ -54,14 +54,12 @@ impl NoiseChannel {
             }
             2 => {
                 self.mode = (data & 0x80) != 0;
-                self.timer_period =
-                    NOISE_PERIOD_TABLE[(data & 0x0F) as usize];
+                self.timer_period = NOISE_PERIOD_TABLE[(data & 0x0F) as usize];
                 self.shift_register = 1;
             }
             3 => {
                 if self.enabled {
-                    self.length_counter =
-                        LENGTH_TABLE[(data >> 3) as usize];
+                    self.length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
                 self.envelope.start = true;
             }
@@ -74,8 +72,7 @@ impl NoiseChannel {
         if self.timer_value == 0 {
             self.timer_value = self.timer_period;
             let bit = if self.mode { 6 } else { 1 };
-            let feedback =
-                (self.shift_register & 1) ^ ((self.shift_register >> bit) & 1);
+            let feedback = (self.shift_register & 1) ^ ((self.shift_register >> bit) & 1);
             self.shift_register >>= 1;
             self.shift_register |= feedback << 14;
         } else {
@@ -92,10 +89,7 @@ impl NoiseChannel {
 
     /// 取得當前輸出音量（0-15）
     pub fn output(&self) -> u8 {
-        if !self.enabled
-            || self.length_counter == 0
-            || (self.shift_register & 1) != 0
-        {
+        if !self.enabled || self.length_counter == 0 || (self.shift_register & 1) != 0 {
             0
         } else {
             self.envelope.output()

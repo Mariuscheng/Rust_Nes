@@ -14,7 +14,11 @@ pub struct AddrResult {
 
 impl AddrResult {
     pub fn new(addr: u16, page_crossed: bool, dummy_addr: Option<u16>) -> Self {
-        Self { addr, page_crossed, dummy_addr }
+        Self {
+            addr,
+            page_crossed,
+            dummy_addr,
+        }
     }
 }
 
@@ -32,11 +36,7 @@ pub(crate) fn read_operand(bus: &mut dyn CpuBus, res: &AddrResult) -> u8 {
 /// Operand read for read-modify-write instructions. Indexed absolute modes
 /// always spend a cycle on the un-indexed address, even when the index does not
 /// cross a page, so the dummy read happens for every RMW access.
-pub(crate) fn read_operand_rmw(
-    bus: &mut dyn CpuBus,
-    res: &AddrResult,
-    mode: &AddressMode,
-) -> u8 {
+pub(crate) fn read_operand_rmw(bus: &mut dyn CpuBus, res: &AddrResult, mode: &AddressMode) -> u8 {
     if let Some(dummy) = res.dummy_addr {
         bus.read(dummy);
     } else if matches!(
@@ -55,7 +55,7 @@ pub(crate) fn get_operand_address_with_page(
     bus: &mut dyn CpuBus,
     param_ptr: u16,
 ) -> AddrResult {
-    let res = match mode {
+    match mode {
         AddressMode::Implied => AddrResult::new(param_ptr, false, None),
         AddressMode::Immediate => AddrResult::new(param_ptr, false, None),
         AddressMode::ZeroPage => AddrResult::new(bus.read(param_ptr) as u16, false, None),
@@ -145,12 +145,8 @@ pub(crate) fn get_operand_address_with_page(
             let hi = bus.read(hi_addr) as u16;
             AddrResult::new((hi << 8) | lo, false, None)
         }
-        AddressMode::Accumulator => {
-            AddrResult::new(param_ptr, false, None)
-        }
-    };
-
-    res
+        AddressMode::Accumulator => AddrResult::new(param_ptr, false, None),
+    }
 }
 
 // 保持向後相容的簡單 API：僅回傳地址（舊呼叫不需改動）

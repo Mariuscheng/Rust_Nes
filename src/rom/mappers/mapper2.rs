@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper2.rs
-// Mapper 2 — UxROM
+//! Mapper 2 — UxROM.
 
 use super::Mapper;
 

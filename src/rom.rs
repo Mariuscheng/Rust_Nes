@@ -1,8 +1,12 @@
+//! iNES/NES 2.0 parsing and mapper abstraction.
+
+pub mod mapper;
+pub mod mappers;
+
 use std::fs;
 use std::path::Path;
 
-use super::mappers;
-use super::mappers::MapperVariant;
+pub use self::mappers::MapperVariant;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Mirroring {
@@ -60,7 +64,11 @@ impl Rom {
             let multiplier = ((raw[4] & 0x03) as usize) * 2 + 1;
             (1usize << exponent) * multiplier * 16384
         } else {
-            let msb = if is_nes20 { ((raw[9] & 0x0F) as usize) << 8 } else { 0 };
+            let msb = if is_nes20 {
+                ((raw[9] & 0x0F) as usize) << 8
+            } else {
+                0
+            };
             ((msb | raw[4] as usize).max(1)) * 16384
         };
         let chr_rom_multiplier: usize = if is_nes20 && raw[9] & 0xF0 == 0xF0 {
@@ -68,8 +76,12 @@ impl Rom {
             let multiplier = ((raw[5] & 0x03) as usize) * 2 + 1;
             (1usize << exponent) * multiplier * 8192
         } else {
-            let msb = if is_nes20 { (((raw[9] as usize) >> 4) & 0x0F) << 8 } else { 0 };
-            ((msb | raw[5] as usize)) * 8192
+            let msb = if is_nes20 {
+                (((raw[9] as usize) >> 4) & 0x0F) << 8
+            } else {
+                0
+            };
+            (msb | raw[5] as usize) * 8192
         };
 
         let chr_size = chr_rom_multiplier;
@@ -78,11 +90,7 @@ impl Rom {
 
         let prg_ram_size: usize = if is_nes20 {
             let shift = raw[10] & 0x0F;
-            if shift == 0 {
-                0
-            } else {
-                64 << shift as usize
-            }
+            if shift == 0 { 0 } else { 64 << shift as usize }
         } else {
             8192
         };
@@ -113,7 +121,11 @@ impl Rom {
             (flags6 & 0x02) != 0 && has_chr_ram
         };
 
-        let is_pal: bool = if is_nes20 { (raw[12] & 0x01) != 0 } else { false };
+        let is_pal: bool = if is_nes20 {
+            (raw[12] & 0x01) != 0
+        } else {
+            false
+        };
 
         let prg_start = 16 + if skip_trainer { 512 } else { 0 };
         let chr_start = prg_start + prg_rom_multiplier;
@@ -163,7 +175,11 @@ impl Rom {
             } else {
                 String::new()
             },
-            if is_nes20 { " (NES 2.0)" } else { " (iNES 1.0)" },
+            if is_nes20 {
+                " (NES 2.0)"
+            } else {
+                " (iNES 1.0)"
+            },
             rom_obj.prg_rom.len() / 1024,
             rom_obj.chr_rom.len() / 1024,
             rom_obj.screen_mirroring,

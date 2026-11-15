@@ -1,26 +1,26 @@
-// src/ppu/ppu.rs
-// Cycle-accurate NES PPU — core struct, register I/O, color processing
-//
-// Implements:
-// - PPU struct with all internal state
-// - CPU-visible register read/write ($2000–$2007)
-// - VRAM/CHR/Palette memory access
-// - Nametable mirroring
-// - Color emphasis and grayscale
+//! PPU: core state, register I/O, palette, sprite evaluation and the per-dot
+//! rendering pipeline.
+//!
+//! `PPU` itself lives here; `registers`, `sprite` and `frame` hold the register
+//! bitfields, OAM evaluation and the dot loop respectively.
 
-use super::registers::{PpuControl, PpuStatus};
+pub mod frame;
+pub mod registers;
+pub mod sprite;
+
+use self::registers::{PpuControl, PpuStatus};
 use crate::rom::Mirroring;
 
 // ── NES 64-color palette ──
 pub const NES_PALETTE: [u32; 64] = [
-    0x757575, 0x271B8F, 0x0000AB, 0x47009F, 0x8F0077, 0xAB0013, 0xA70000, 0x7F0B00,
-    0x432F00, 0x004700, 0x005100, 0x00393B, 0x004058, 0x000000, 0x000000, 0x000000,
-    0xBCBCBC, 0x0073EF, 0x233BEF, 0x8300F3, 0xBF00BF, 0xE7005B, 0xDB2B00, 0xCB4F00,
-    0x8B7300, 0x009700, 0x00AB00, 0x00933B, 0x00838B, 0x000000, 0x000000, 0x000000,
-    0xFFFFFF, 0x3FBFFF, 0x5F97FF, 0xA78BFD, 0xF77BFF, 0xFF77B7, 0xFF7763, 0xFF9B3B,
-    0xF3BF3F, 0x72D64F, 0x6BEFB2, 0x54F3E0, 0x5AEFFF, 0x5B5B5B, 0x000000, 0x000000,
-    0xFFFFFF, 0xABE7FF, 0xC7D7FF, 0xD7CBFF, 0xF7C7FF, 0xFFC7DB, 0xFFC7B7, 0xFFCFAB,
-    0xFFF7C7, 0xF3D7A3, 0xA7E3BB, 0xB7F3DB, 0xB3F3FF, 0xB3B3B3, 0x000000, 0x000000,
+    0x757575, 0x271B8F, 0x0000AB, 0x47009F, 0x8F0077, 0xAB0013, 0xA70000, 0x7F0B00, 0x432F00,
+    0x004700, 0x005100, 0x00393B, 0x004058, 0x000000, 0x000000, 0x000000, 0xBCBCBC, 0x0073EF,
+    0x233BEF, 0x8300F3, 0xBF00BF, 0xE7005B, 0xDB2B00, 0xCB4F00, 0x8B7300, 0x009700, 0x00AB00,
+    0x00933B, 0x00838B, 0x000000, 0x000000, 0x000000, 0xFFFFFF, 0x3FBFFF, 0x5F97FF, 0xA78BFD,
+    0xF77BFF, 0xFF77B7, 0xFF7763, 0xFF9B3B, 0xF3BF3F, 0x72D64F, 0x6BEFB2, 0x54F3E0, 0x5AEFFF,
+    0x5B5B5B, 0x000000, 0x000000, 0xFFFFFF, 0xABE7FF, 0xC7D7FF, 0xD7CBFF, 0xF7C7FF, 0xFFC7DB,
+    0xFFC7B7, 0xFFCFAB, 0xFFF7C7, 0xF3D7A3, 0xA7E3BB, 0xB7F3DB, 0xB3F3FF, 0xB3B3B3, 0x000000,
+    0x000000,
 ];
 
 pub(crate) const NT_BASE: [u16; 4] = [0x2000, 0x2400, 0x2800, 0x2C00];
@@ -310,7 +310,7 @@ impl PPU {
                 self.refresh_decay_bits(0xE0, res);
                 res
             }
-             7 => {
+            7 => {
                 let addr = self.v & 0x3FFF;
                 self.v = self.v.wrapping_add(self.vram_increment as u16) & 0x3FFF;
                 if addr <= 0x3EFF {
@@ -323,27 +323,27 @@ impl PPU {
                     // ppu_open_bus test 4 checks exactly this.
                     self.refresh_decay_bits(0xFF, result);
                     result
-            } else {
-                let palette_data = self.internal_read(addr);
-                self.read_buffer = self.internal_read(addr & 0x2FFF);
-                // Palette read: bits 7-6 from decay register (DD), bits 5-0 from PPU (--)
-                // Refresh only bits 5-0; bits 7-6 keep their old decay values
-                self.refresh_decay_bits(0x3F, palette_data);
-                (self.open_bus_latch & 0xC0) | (palette_data & 0x3F)
+                } else {
+                    let palette_data = self.internal_read(addr);
+                    self.read_buffer = self.internal_read(addr & 0x2FFF);
+                    // Palette read: bits 7-6 from decay register (DD), bits 5-0 from PPU (--)
+                    // Refresh only bits 5-0; bits 7-6 keep their old decay values
+                    self.refresh_decay_bits(0x3F, palette_data);
+                    (self.open_bus_latch & 0xC0) | (palette_data & 0x3F)
+                }
             }
-        }
-        4 => {
-            let idx = self.oam_addr as usize;
-            let val = self.oam[idx];
-            let masked = if (idx & 3) == 2 { val & 0xE3 } else { val };
-            self.refresh_decay_bits(0xFF, masked);
-            masked
-        }
-        _ => {
-            // Registers $2000, $2001, $2003, $2005, $2006: all 8 bits from decay (DDDD DDDD)
-            // Do NOT refresh the latch
-            self.open_bus_latch
-        }
+            4 => {
+                let idx = self.oam_addr as usize;
+                let val = self.oam[idx];
+                let masked = if (idx & 3) == 2 { val & 0xE3 } else { val };
+                self.refresh_decay_bits(0xFF, masked);
+                masked
+            }
+            _ => {
+                // Registers $2000, $2001, $2003, $2005, $2006: all 8 bits from decay (DDDD DDDD)
+                // Do NOT refresh the latch
+                self.open_bus_latch
+            }
         }
     }
 
@@ -357,7 +357,7 @@ impl PPU {
             }
             0x3F00..=0x3FFF => {
                 let mut pa = (addr - 0x3F00) % 32;
-                if pa >= 0x10 && pa % 4 == 0 {
+                if pa >= 0x10 && pa.is_multiple_of(4) {
                     pa -= 0x10;
                 }
                 self.palette[pa as usize] & 0x3F
@@ -376,7 +376,7 @@ impl PPU {
             }
             0x3F00..=0x3FFF => {
                 let mut pa = (addr - 0x3F00) % 32;
-                if pa >= 0x10 && pa % 4 == 0 {
+                if pa >= 0x10 && pa.is_multiple_of(4) {
                     pa -= 0x10;
                 }
                 self.palette[pa as usize] = data;
@@ -420,9 +420,21 @@ impl PPU {
         let g = (color >> 8) & 0xFF;
         let b = color & 0xFF;
         // Emphasize: the set bit DIMS its corresponding channel on real hardware
-        let r = if (emphasis & 0x01) != 0 { (r as f32 * 0.75) as u32 } else { r };
-        let g = if (emphasis & 0x02) != 0 { (g as f32 * 0.75) as u32 } else { g };
-        let b = if (emphasis & 0x04) != 0 { (b as f32 * 0.75) as u32 } else { b };
+        let r = if (emphasis & 0x01) != 0 {
+            (r as f32 * 0.75) as u32
+        } else {
+            r
+        };
+        let g = if (emphasis & 0x02) != 0 {
+            (g as f32 * 0.75) as u32
+        } else {
+            g
+        };
+        let b = if (emphasis & 0x04) != 0 {
+            (b as f32 * 0.75) as u32
+        } else {
+            b
+        };
         (r << 16) | (g << 8) | b
     }
 
@@ -438,30 +450,6 @@ impl PPU {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Pattern memory is read-only on CHR-ROM cartridges: a `$2007` write into
-    /// `$0000-$1FFF` must be ignored instead of corrupting the tile data.
-    ///
-    /// Regression: 1942 clears sprite tiles `$00`/`$01` this way (a write the
-    /// hardware drops), which used to blank its HUD digits — "1UP 000000" lost
-    /// the "1" and all six zeros.
-    #[test]
-    fn chr_rom_ignores_pattern_writes() {
-        let mut ppu = PPU::new(Mirroring::HORIZONTAL);
-        ppu.chr_ram[0] = 0x5A;
-        ppu.chr_ram[0x1000] = 0x3C;
-
-        ppu.chr_is_ram = false;
-        ppu.internal_write(0x0000, 0x00);
-        ppu.internal_write(0x1000, 0x00);
-        assert_eq!(ppu.chr_ram[0], 0x5A, "CHR-ROM must ignore $0000 writes");
-        assert_eq!(ppu.chr_ram[0x1000], 0x3C, "CHR-ROM must ignore $1000 writes");
-
-        ppu.chr_is_ram = true;
-        ppu.internal_write(0x0000, 0x11);
-        assert_eq!(ppu.chr_ram[0], 0x11, "CHR RAM must accept $0000 writes");
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/ppu_tests.rs"]
+mod tests;

@@ -5,12 +5,7 @@ use crate::cpu::decoder::AddressMode;
 
 // ===================== Subroutine / Jump =====================
 
-pub(crate) fn op_jsr(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_jsr(cpu: &mut CPU, bus: &mut dyn CpuBus, mode: AddressMode, current_pc: u16) {
     let target = get_operand_address(cpu, &mode, bus, current_pc.wrapping_add(1));
     // JSR: after fetching the low byte of the target the CPU spends one cycle
     // adjusting the stack pointer before pushing the return address.
@@ -19,24 +14,14 @@ pub(crate) fn op_jsr(
     cpu.pc = target;
 }
 
-pub(crate) fn op_rts(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_rts(cpu: &mut CPU, bus: &mut dyn CpuBus, _: AddressMode, current_pc: u16) {
     // RTS does a dummy read of the byte immediately following the opcode
     let _ = bus.read(current_pc.wrapping_add(1));
     let return_addr = crate::cpu::stack_flags::stack_pop_u16(cpu, bus);
     cpu.pc = return_addr.wrapping_add(1);
 }
 
-pub(crate) fn op_brk(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_brk(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     // BRK cycle sequence (7 cycles; the opcode fetch already ticked in step()):
     //   c2: read dummy byte at PC+1 (automatic fetch of the next byte)
     //   c3: push PCH
@@ -80,12 +65,7 @@ pub(crate) fn op_brk(
     }
 }
 
-pub(crate) fn op_rti(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_rti(cpu: &mut CPU, bus: &mut dyn CpuBus, _: AddressMode, current_pc: u16) {
     // RTI does a dummy fetch of the byte immediately following the opcode
     let _ = bus.read(current_pc.wrapping_add(1));
     let status = crate::cpu::stack_flags::stack_pop_u8(cpu, bus);
@@ -202,12 +182,7 @@ pub(crate) fn op_bcc(
     op_branch(cpu, bus, current_pc, !cpu.carry())
 }
 
-pub(crate) fn op_jmp(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_jmp(cpu: &mut CPU, bus: &mut dyn CpuBus, mode: AddressMode, current_pc: u16) {
     let target = get_operand_address(cpu, &mode, bus, current_pc.wrapping_add(1));
     cpu.pc = target;
 }

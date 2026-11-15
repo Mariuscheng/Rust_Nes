@@ -1,4 +1,4 @@
-// ram.rs
+//! 2 KiB internal work RAM with mirroring.
 
 /// [API] NES 內部工作 RAM (2KB)
 pub struct Ram {
@@ -34,5 +34,4 @@ impl Ram {
         let len = data.len().min(2048);
         self.data[..len].copy_from_slice(&data[..len]);
     }
-
 }

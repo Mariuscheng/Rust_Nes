@@ -1,5 +1,5 @@
 use crate::bus::CpuBus;
-use crate::cpu::decoder::{decode_opcode, Instruction};
+use crate::cpu::decoder::{Instruction, decode_opcode};
 use crate::cpu::ops;
 
 /// 派發無回傳值的 opcode handler（Flag set/clear、Register transfer、Stack、Jump 等）
@@ -43,13 +43,6 @@ pub struct CPU {
     /// edge that arrives on cycle 5 (after the poll) is serviced after the
     /// *next* instruction, not after BRK finishes.
     pub nmi_polled: bool,
-    /// Total CPU cycles consumed by the last instruction (set by step()).
-    pub last_cycles: u16,
-    /// Test-only: opcodes that needed trailing padding (internal cycles not
-    /// yet placed at their hardware position). The padding regression tests
-    /// read this; release builds do not pay for the bookkeeping.
-    #[cfg(test)]
-    pub padded: [bool; 256],
 }
 
 impl CPU {
@@ -64,9 +57,6 @@ impl CPU {
             poll_iflag: true,
             poll_delay: 0,
             nmi_polled: false,
-            last_cycles: 0,
-            #[cfg(test)]
-            padded: [false; 256],
         }
     }
 
@@ -116,9 +106,15 @@ impl CPU {
             Instruction::DEY => dispatch_void!(self, bus, opcode, current_pc, op_dey),
 
             // ── Load (extra) ──
-            Instruction::LDX => dispatch_extra!(self, bus, opcode, current_pc, op_ldx, extra_cycles),
-            Instruction::LDA => dispatch_extra!(self, bus, opcode, current_pc, op_lda, extra_cycles),
-            Instruction::LDY => dispatch_extra!(self, bus, opcode, current_pc, op_ldy, extra_cycles),
+            Instruction::LDX => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_ldx, extra_cycles)
+            }
+            Instruction::LDA => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_lda, extra_cycles)
+            }
+            Instruction::LDY => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_ldy, extra_cycles)
+            }
 
             // ── Store (void) ──
             Instruction::STA => dispatch_void!(self, bus, opcode, current_pc, op_sta),
@@ -126,27 +122,57 @@ impl CPU {
             Instruction::STY => dispatch_void!(self, bus, opcode, current_pc, op_sty),
 
             // ── ALU (extra) ──
-            Instruction::ORA => dispatch_extra!(self, bus, opcode, current_pc, op_ora, extra_cycles),
-            Instruction::AND => dispatch_extra!(self, bus, opcode, current_pc, op_and, extra_cycles),
-            Instruction::EOR => dispatch_extra!(self, bus, opcode, current_pc, op_eor, extra_cycles),
-            Instruction::ADC => dispatch_extra!(self, bus, opcode, current_pc, op_adc, extra_cycles),
-            Instruction::SBC => dispatch_extra!(self, bus, opcode, current_pc, op_sbc, extra_cycles),
+            Instruction::ORA => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_ora, extra_cycles)
+            }
+            Instruction::AND => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_and, extra_cycles)
+            }
+            Instruction::EOR => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_eor, extra_cycles)
+            }
+            Instruction::ADC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_adc, extra_cycles)
+            }
+            Instruction::SBC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_sbc, extra_cycles)
+            }
 
             // ── Compare (extra) ──
-            Instruction::CMP => dispatch_extra!(self, bus, opcode, current_pc, op_cmp, extra_cycles),
-            Instruction::CPX => dispatch_extra!(self, bus, opcode, current_pc, op_cpx, extra_cycles),
-            Instruction::CPY => dispatch_extra!(self, bus, opcode, current_pc, op_cpy, extra_cycles),
+            Instruction::CMP => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_cmp, extra_cycles)
+            }
+            Instruction::CPX => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_cpx, extra_cycles)
+            }
+            Instruction::CPY => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_cpy, extra_cycles)
+            }
 
             // ── Shift/Rotate (extra) ──
-            Instruction::ASL => dispatch_extra!(self, bus, opcode, current_pc, op_asl, extra_cycles),
-            Instruction::LSR => dispatch_extra!(self, bus, opcode, current_pc, op_lsr, extra_cycles),
-            Instruction::ROL => dispatch_extra!(self, bus, opcode, current_pc, op_rol, extra_cycles),
-            Instruction::ROR => dispatch_extra!(self, bus, opcode, current_pc, op_ror, extra_cycles),
+            Instruction::ASL => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_asl, extra_cycles)
+            }
+            Instruction::LSR => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_lsr, extra_cycles)
+            }
+            Instruction::ROL => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_rol, extra_cycles)
+            }
+            Instruction::ROR => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_ror, extra_cycles)
+            }
 
             // ── Memory ops (extra) ──
-            Instruction::BIT => dispatch_extra!(self, bus, opcode, current_pc, op_bit, extra_cycles),
-            Instruction::DEC => dispatch_extra!(self, bus, opcode, current_pc, op_dec, extra_cycles),
-            Instruction::INC => dispatch_extra!(self, bus, opcode, current_pc, op_inc, extra_cycles),
+            Instruction::BIT => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bit, extra_cycles)
+            }
+            Instruction::DEC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_dec, extra_cycles)
+            }
+            Instruction::INC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_inc, extra_cycles)
+            }
 
             // ── Stack (void) ──
             Instruction::PHA => dispatch_void!(self, bus, opcode, current_pc, op_pha),
@@ -162,34 +188,68 @@ impl CPU {
             Instruction::RTI => dispatch_void!(self, bus, opcode, current_pc, op_rti),
 
             // ── Branch (extra) ──
-            Instruction::BPL => dispatch_extra!(self, bus, opcode, current_pc, op_bpl, extra_cycles),
-            Instruction::BMI => dispatch_extra!(self, bus, opcode, current_pc, op_bmi, extra_cycles),
-            Instruction::BVC => dispatch_extra!(self, bus, opcode, current_pc, op_bvc, extra_cycles),
-            Instruction::BVS => dispatch_extra!(self, bus, opcode, current_pc, op_bvs, extra_cycles),
-            Instruction::BCC => dispatch_extra!(self, bus, opcode, current_pc, op_bcc, extra_cycles),
-            Instruction::BCS => dispatch_extra!(self, bus, opcode, current_pc, op_bcs, extra_cycles),
-            Instruction::BEQ => dispatch_extra!(self, bus, opcode, current_pc, op_beq, extra_cycles),
-            Instruction::BNE => dispatch_extra!(self, bus, opcode, current_pc, op_bne, extra_cycles),
+            Instruction::BPL => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bpl, extra_cycles)
+            }
+            Instruction::BMI => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bmi, extra_cycles)
+            }
+            Instruction::BVC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bvc, extra_cycles)
+            }
+            Instruction::BVS => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bvs, extra_cycles)
+            }
+            Instruction::BCC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bcc, extra_cycles)
+            }
+            Instruction::BCS => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bcs, extra_cycles)
+            }
+            Instruction::BEQ => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_beq, extra_cycles)
+            }
+            Instruction::BNE => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_bne, extra_cycles)
+            }
 
             // ── NOP (void) ──
-            Instruction::NOP => dispatch_extra!(self, bus, opcode, current_pc, op_nop, extra_cycles),
+            Instruction::NOP => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_nop, extra_cycles)
+            }
 
             // ── Unofficial opcodes ──
-            Instruction::SLO => dispatch_extra!(self, bus, opcode, current_pc, op_slo, extra_cycles),
-            Instruction::RLA => dispatch_extra!(self, bus, opcode, current_pc, op_rla, extra_cycles),
-            Instruction::SRE => dispatch_extra!(self, bus, opcode, current_pc, op_sre, extra_cycles),
-            Instruction::RRA => dispatch_extra!(self, bus, opcode, current_pc, op_rra, extra_cycles),
+            Instruction::SLO => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_slo, extra_cycles)
+            }
+            Instruction::RLA => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_rla, extra_cycles)
+            }
+            Instruction::SRE => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_sre, extra_cycles)
+            }
+            Instruction::RRA => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_rra, extra_cycles)
+            }
             Instruction::SAX => dispatch_void!(self, bus, opcode, current_pc, op_sax),
-            Instruction::LAX => dispatch_extra!(self, bus, opcode, current_pc, op_lax, extra_cycles),
-            Instruction::DCP => dispatch_extra!(self, bus, opcode, current_pc, op_dcp, extra_cycles),
-            Instruction::ISC => dispatch_extra!(self, bus, opcode, current_pc, op_isc, extra_cycles),
+            Instruction::LAX => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_lax, extra_cycles)
+            }
+            Instruction::DCP => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_dcp, extra_cycles)
+            }
+            Instruction::ISC => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_isc, extra_cycles)
+            }
             Instruction::ANC => dispatch_void!(self, bus, opcode, current_pc, op_anc),
             Instruction::ALR => dispatch_void!(self, bus, opcode, current_pc, op_alr),
             Instruction::ARR => dispatch_void!(self, bus, opcode, current_pc, op_arr),
             Instruction::AXS => dispatch_void!(self, bus, opcode, current_pc, op_axs),
             Instruction::KIL => dispatch_void!(self, bus, opcode, current_pc, op_kil),
             Instruction::ANX => dispatch_void!(self, bus, opcode, current_pc, op_anx),
-            Instruction::LAS => dispatch_extra!(self, bus, opcode, current_pc, op_las, extra_cycles),
+            Instruction::LAS => {
+                dispatch_extra!(self, bus, opcode, current_pc, op_las, extra_cycles)
+            }
             Instruction::SYA => dispatch_void!(self, bus, opcode, current_pc, op_sya),
             Instruction::SXA => dispatch_void!(self, bus, opcode, current_pc, op_sxa),
             Instruction::AHX => dispatch_void!(self, bus, opcode, current_pc, op_ahx),
@@ -214,23 +274,6 @@ impl CPU {
         for _ in used..total_cycles {
             bus.tick();
         }
-        if used < total_cycles {
-            // Trailing padding: some internal cycle of this instruction is not
-            // yet placed at its hardware position. Only the instructions whose
-            // internal cycle genuinely is their last cycle may rely on this.
-            #[cfg(test)]
-            {
-                debug_assert!(
-                    crate::cpu::schedule::allows_trailing(opcode_byte, total_cycles - used),
-                    "opcode {:#04X} at {:#06X}: {} trailing idle cycles do not match \
-                     the schedule table",
-                    opcode_byte,
-                    current_pc,
-                    total_cycles - used
-                );
-                self.padded[opcode_byte as usize] = true;
-            }
-        }
 
         // DMC DMA raised during the instruction (or while padding) stalls the
         // CPU for 4 cycles; pay those now. Anything raised while paying them is
@@ -244,12 +287,6 @@ impl CPU {
             }
         }
 
-        // Decrement interrupt delay counters after instruction completes.
-        // This is called here so that unit tests (which call step() directly)
-        // also get correct counter behavior.
-        self.last_cycles = total_cycles;
         total_cycles
     }
-
-
 }

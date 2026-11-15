@@ -1,10 +1,9 @@
-// src/rom/mappers/vrc6.rs
-// Mapper 24/26 — VRC6 (Konami)
+//! Mapper 24/26 — VRC6 (Konami), covering both VRC6a and VRC6b.
 // Supports both VRC6a (mapper 24) and VRC6b (mapper 26).
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
-use super::Mirroring;
 use super::Mapper;
+use super::Mirroring;
 
 pub struct Vrc6 {
     prg_rom: Vec<u8>,
@@ -119,8 +118,8 @@ impl Mapper for Vrc6 {
         }
         let bank = (addr as usize / 0x0400) % 8;
         let chr_banks_count = (self.chr_rom.len() / 0x0400).max(1);
-        let offset = (self.chr_banks[bank] as usize % chr_banks_count) * 0x0400
-            + (addr as usize % 0x0400);
+        let offset =
+            (self.chr_banks[bank] as usize % chr_banks_count) * 0x0400 + (addr as usize % 0x0400);
         self.chr_rom.get(offset).copied().unwrap_or(0)
     }
 

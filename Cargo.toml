@@ -8,8 +8,8 @@ minifb = "0.24"
 rodio = "0.17"
 
 [features]
-# Enables the local-only regression harness in `testing/` (blargg ROM suite and
-# golden frames). That directory is not published, so the feature is off by
-# default: a fresh clone builds and tests without it.
+# Enables the local-only test harness in `testing/` (unit tests, blargg ROM
+# suite and golden frames). That directory is not published, so the feature is
+# off by default: a fresh clone builds — and `cargo test` runs nothing — without it.
 local_harness = []
 

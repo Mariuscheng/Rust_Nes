@@ -1,5 +1,4 @@
-// src/rom/mappers/fme7.rs
-// Mapper 69 — FME-7 (Sunsoft 5B)
+//! Mapper 69 — FME-7 (Sunsoft 5B).
 // Sunsoft Batman: Return of the Joker and other Sunsoft games.
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
@@ -57,9 +56,11 @@ impl Fme7 {
 impl Mapper for Fme7 {
     fn read_prg(&self, addr: u16) -> u8 {
         match addr {
-            0x6000..=0x7FFF => {
-                self.prg_ram.get((addr - 0x6000) as usize).copied().unwrap_or(0)
-            }
+            0x6000..=0x7FFF => self
+                .prg_ram
+                .get((addr - 0x6000) as usize)
+                .copied()
+                .unwrap_or(0),
             0x8000..=0xFFFF => {
                 let banks = (self.prg_rom.len() / 0x2000).max(1);
                 let bank = match addr {
@@ -207,34 +208,6 @@ impl Mapper for Fme7 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mapper() -> Fme7 {
-        Fme7::new(vec![0u8; 0x8000], vec![0u8; 16 * 1024], false, false)
-    }
-
-    #[test]
-    fn chr_dirty_marks_only_the_bank_a_write_touches() {
-        let mut m = mapper();
-        assert_eq!(
-            m.take_chr_dirty_blocks(),
-            0xFF,
-            "boot refresh must copy all of CHR"
-        );
-
-        // Command 3 selects CHR 1 KiB block 3 — and nothing else.
-        m.write_prg(0x8000, 3);
-        assert_eq!(m.take_chr_dirty_blocks(), 0, "latch alone moves no banks");
-        m.write_prg(0xA000, 9);
-        assert_eq!(m.take_chr_dirty_blocks(), 1 << 3);
-
-        // IRQ latch / control commands leave the pattern table alone.
-        m.write_prg(0x8000, 9);
-        m.write_prg(0xA000, 0x20);
-        m.write_prg(0x8000, 0x0B);
-        m.write_prg(0xA000, 0x01);
-        assert_eq!(m.take_chr_dirty_blocks(), 0);
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../../../testing/fme7_tests.rs"]
+mod tests;

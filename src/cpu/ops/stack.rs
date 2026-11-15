@@ -5,23 +5,13 @@ use crate::cpu::stack_flags::update_zero_and_negative_flags;
 
 // ===================== Stack Push / Pop =====================
 
-pub(crate) fn op_pha(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    _current_pc: u16,
-) {
+pub(crate) fn op_pha(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, _current_pc: u16) {
     // PHA: fetch, then an internal cycle while SP is driven, then the write.
     bus.tick();
     crate::cpu::stack_flags::stack_push_u8(cpu, bus, cpu.a);
 }
 
-pub(crate) fn op_pla(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    _current_pc: u16,
-) {
+pub(crate) fn op_pla(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, _current_pc: u16) {
     // PLA: fetch, internal, pull, then an internal cycle to update SP.
     bus.tick();
     cpu.a = crate::cpu::stack_flags::stack_pop_u8(cpu, bus);
@@ -29,23 +19,13 @@ pub(crate) fn op_pla(
     update_zero_and_negative_flags(cpu, cpu.a);
 }
 
-pub(crate) fn op_php(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    _current_pc: u16,
-) {
+pub(crate) fn op_php(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, _current_pc: u16) {
     // 6502: PHP pushes P with both B flag (bit 4) and unused bit (bit 5) set
     bus.tick();
     crate::cpu::stack_flags::stack_push_u8(cpu, bus, cpu.for_push_brk());
 }
 
-pub(crate) fn op_plp(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    _current_pc: u16,
-) {
+pub(crate) fn op_plp(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, _current_pc: u16) {
     bus.tick();
     let v = crate::cpu::stack_flags::stack_pop_u8(cpu, bus);
     bus.tick();

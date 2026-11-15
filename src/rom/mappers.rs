@@ -1,5 +1,5 @@
-// src/rom/mappers/mod.rs
-// Individual mapper implementations
+//! Mapper implementations and the static `MapperVariant` dispatch.
+pub mod fme7;
 pub mod mapper0;
 pub mod mapper1;
 pub mod mapper2;
@@ -8,11 +8,11 @@ pub mod mapper4;
 pub mod mapper5;
 pub mod mapper7;
 pub mod vrc6;
-pub mod fme7;
 
+use super::Mirroring;
 use super::mapper::Mapper;
-use super::rom::Mirroring;
 
+pub use fme7::Fme7;
 pub use mapper0::Mapper0;
 pub use mapper1::Mapper1;
 pub use mapper2::Mapper2;
@@ -21,7 +21,6 @@ pub use mapper4::Mapper4;
 pub use mapper5::Mapper5;
 pub use mapper7::Mapper7;
 pub use vrc6::Vrc6;
-pub use fme7::Fme7;
 
 // ── MapperVariant: static enum 取代 Box<dyn Mapper> ──
 

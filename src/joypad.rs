@@ -74,76 +74,8 @@ impl Joypad {
         }
         res
     }
-
-    #[cfg(test)]
-    pub fn reset(&mut self) {
-        self.state = 0;
-        self.shift = 0;
-        self.strobe = false;
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn joypad_serial_reads() {
-        let mut joy = Joypad::new();
-        joy.set_button(Button::A, true);
-        joy.set_button(Button::B, true);
-        joy.cpu_write(1); // strobe high
-        joy.cpu_write(0); // strobe low → latch
-
-        assert_eq!(joy.cpu_read(), 1); // A
-        assert_eq!(joy.cpu_read(), 1); // B
-        assert_eq!(joy.cpu_read(), 0); // Select (not pressed)
-    }
-
-    #[test]
-    fn joypad_reset_clears_state() {
-        let mut joy = Joypad::new();
-        joy.set_button(Button::Start, true);
-        joy.reset();
-        joy.cpu_write(1);
-        joy.cpu_write(0);
-        assert_eq!(joy.cpu_read(), 0);
-    }
-
-    #[test]
-    fn joypad_strobe_high_continuously_returns_a() {
-        let mut joy = Joypad::new();
-        joy.set_button(Button::A, true);
-        joy.cpu_write(1); // strobe high → 持續 latch
-        // strobe 高電位期間，每次讀取都回傳 button A 的狀態
-        assert_eq!(joy.cpu_read(), 1);
-        assert_eq!(joy.cpu_read(), 1);
-        assert_eq!(joy.cpu_read(), 1);
-    }
-
-    #[test]
-    fn joypad_all_buttons_read_order() {
-        let mut joy = Joypad::new();
-        // 按下所有按鍵
-        for &btn in &[
-            Button::A,
-            Button::B,
-            Button::Select,
-            Button::Start,
-            Button::Up,
-            Button::Down,
-            Button::Left,
-            Button::Right,
-        ] {
-            joy.set_button(btn, true);
-        }
-        joy.cpu_write(1);
-        joy.cpu_write(0);
-        // 所有 8 個 bit 都應該是 1
-        for _ in 0..8 {
-            assert_eq!(joy.cpu_read(), 1);
-        }
-        // 第 9 次讀取應該回傳 0（shift register 已空）
-        assert_eq!(joy.cpu_read(), 0);
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/joypad_tests.rs"]
+mod tests;

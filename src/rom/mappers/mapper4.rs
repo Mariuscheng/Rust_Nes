@@ -1,9 +1,8 @@
-// src/rom/mappers/mapper4.rs
-// Mapper 4 — MMC3
+//! Mapper 4 — MMC3, including the A12 scanline IRQ counter.
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
-use super::Mirroring;
 use super::Mapper;
+use super::Mirroring;
 
 pub struct Mapper4 {
     prg_rom: Vec<u8>,
@@ -24,12 +23,7 @@ pub struct Mapper4 {
 }
 
 impl Mapper4 {
-    pub fn new(
-        prg_rom: Vec<u8>,
-        chr_rom: Vec<u8>,
-        mirroring: Mirroring,
-        battery: bool,
-    ) -> Self {
+    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, mirroring: Mirroring, battery: bool) -> Self {
         let mut mapper = Self {
             prg_rom,
             chr_rom,

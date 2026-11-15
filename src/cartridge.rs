@@ -37,8 +37,8 @@ impl Cartridge {
     /// CHR-RAM mappers 不需要呼叫此方法（遊戲透過 $2007 寫入圖形資料）。
     pub fn init_chr_ram(&self, chr_ram: &mut [u8; 8192]) {
         if !self.has_chr_ram {
-            for i in 0..8192 {
-                chr_ram[i] = self.mapper.read_chr(i as u16);
+            for (addr, byte) in chr_ram.iter_mut().enumerate() {
+                *byte = self.mapper.read_chr(addr as u16);
             }
         }
     }

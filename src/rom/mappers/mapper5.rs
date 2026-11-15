@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper5.rs
-// Mapper 5 — MMC5 (basic stub with PRG/CHR banking)
+//! Mapper 5 — MMC5 (partial: linear PRG/CHR banking).
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
@@ -29,11 +28,7 @@ pub struct Mapper5 {
 }
 
 impl Mapper5 {
-    pub fn new(
-        prg_rom: Vec<u8>,
-        chr_rom: Vec<u8>,
-        battery: bool,
-    ) -> Self {
+    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, battery: bool) -> Self {
         let mut mapper = Self {
             prg_rom,
             chr_rom,
@@ -127,17 +122,15 @@ impl Mapper for Mapper5 {
                     self.prg_ram[offset] = data;
                 }
             }
-            0x8000..=0xFFFF => {
-                match addr {
-                    0x8000..=0x9FFF => {
-                        self.prg_mode = data & 0x03;
-                    }
-                    0xA000..=0xBFFF => {
-                        self.chr_mode = data & 0x03;
-                    }
-                    _ => {}
+            0x8000..=0xFFFF => match addr {
+                0x8000..=0x9FFF => {
+                    self.prg_mode = data & 0x03;
                 }
-            }
+                0xA000..=0xBFFF => {
+                    self.chr_mode = data & 0x03;
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

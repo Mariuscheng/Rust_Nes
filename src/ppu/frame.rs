@@ -1,10 +1,7 @@
-// src/ppu/frame.rs
-// Per-cycle PPU rendering pipeline: tick, fetch, render, scroll
+//! Per-cycle PPU rendering pipeline: dot timing, tile fetch, pixel render, scroll.
 
+use super::{NES_PALETTE, NT_BASE, PPU};
 use crate::constants::{DOTS_PER_SCANLINE, SCANLINES_PER_FRAME};
-use super::ppu::PPU;
-use super::ppu::NES_PALETTE;
-use super::ppu::NT_BASE;
 
 impl PPU {
     // ── Per-cycle tick ──
@@ -88,9 +85,7 @@ impl PPU {
             }
 
             // Copy vertical bits from t to v on pre-render line cycles 280-304
-            if self.rendering_enabled && is_pre_render
-                && self.cycle >= 280 && self.cycle <= 304
-            {
+            if self.rendering_enabled && is_pre_render && self.cycle >= 280 && self.cycle <= 304 {
                 self.v = (self.v & 0x041F) | (self.t & 0x7BE0);
             }
 
@@ -138,10 +133,8 @@ impl PPU {
 
         // Render the pixel from the current shift-register state: bit 15 is
         // the pixel leaving the register on this dot.
-        if cycle >= 1 && cycle <= 256 {
-            if is_visible {
-                self.render_pixel();
-            }
+        if (1..=256).contains(&cycle) && is_visible {
+            self.render_pixel();
         }
 
         // ── BG shift register advancement ──
@@ -149,7 +142,7 @@ impl PPU {
         // position 15 at the start of the dot. The prefetch also shifts, which
         // moves the first prefetched tile into the high byte before the second
         // one is loaded.
-        if (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336) {
+        if (1..=256).contains(&cycle) || (321..=336).contains(&cycle) {
             self.bg_shift_lo <<= 1;
             self.bg_shift_hi <<= 1;
             self.bg_attr_lo <<= 1;
@@ -158,7 +151,7 @@ impl PPU {
 
         // Fetch new tile data. The fetched tile is loaded into the low byte at
         // sub_cycle 0 (the end of the eight-dot fetch group).
-        if cycle >= 1 && cycle <= 256 {
+        if (1..=256).contains(&cycle) {
             self.fetch_bg_tile(sub_cycle);
         }
 
@@ -167,7 +160,7 @@ impl PPU {
         }
 
         // Pre-fetch first two tiles for next scanline
-        if cycle >= 321 && cycle <= 336 {
+        if (321..=336).contains(&cycle) {
             self.fetch_bg_tile(sub_cycle);
         }
     }
@@ -179,12 +172,12 @@ impl PPU {
             return;
         }
 
-        let current_a12 = if cycle >= 1 && cycle <= 256 {
+        let current_a12 = if (1..=256).contains(&cycle) {
             let sub = cycle % 8;
             (sub == 5 || sub == 7) && self.ctrl.background_pattern_addr != 0
-        } else if cycle >= 257 && cycle <= 320 {
+        } else if (257..=320).contains(&cycle) {
             true // conservative: assume A12 can be high during sprite fetches
-        } else if cycle >= 321 && cycle <= 340 {
+        } else if (321..=340).contains(&cycle) {
             let sub = cycle % 8;
             (sub == 5 || sub == 7) && self.ctrl.background_pattern_addr != 0
         } else {
@@ -212,9 +205,8 @@ impl PPU {
                 self.nt_byte = self.vram[self.mirror_nametable_addr(nt_addr)];
             }
             3 => {
-                let attr_addr = nt_base + 0x03C0
-                    + ((coarse_y as u16) / 4) * 8
-                    + (coarse_x as u16) / 4;
+                let attr_addr =
+                    nt_base + 0x03C0 + ((coarse_y as u16) / 4) * 8 + (coarse_x as u16) / 4;
                 self.at_byte = self.vram[self.mirror_nametable_addr(attr_addr)];
             }
             5 => {
@@ -240,8 +232,16 @@ impl PPU {
                 let shift = (if quad_y { 4 } else { 0 }) + (if quad_x { 2 } else { 0 });
                 let palette_bits = (self.at_byte >> shift) & 0x03;
 
-                let attr_lo = if (palette_bits & 0x01) != 0 { 0xFF } else { 0x00 };
-                let attr_hi = if (palette_bits & 0x02) != 0 { 0xFF } else { 0x00 };
+                let attr_lo = if (palette_bits & 0x01) != 0 {
+                    0xFF
+                } else {
+                    0x00
+                };
+                let attr_hi = if (palette_bits & 0x02) != 0 {
+                    0xFF
+                } else {
+                    0x00
+                };
 
                 self.bg_shift_lo = (self.bg_shift_lo & 0xFF00) | (self.bg_low_byte as u16);
                 self.bg_shift_hi = (self.bg_shift_hi & 0xFF00) | (self.bg_high_byte as u16);
@@ -297,13 +297,13 @@ impl PPU {
         // Background pixel (from shift register MSB)
         let bit_mux: u16 = 0x8000 >> self.x;
         let bg_pixel = if bg_enabled && !(bg_clip && px < 8) {
-            ((self.bg_shift_hi & bit_mux) != 0) as u8 * 2
+            (((self.bg_shift_hi & bit_mux) != 0) as u8 * 2)
                 | ((self.bg_shift_lo & bit_mux) != 0) as u8
         } else {
             0
         };
         let bg_palette = if bg_enabled {
-            ((self.bg_attr_hi & bit_mux) != 0) as u8 * 2
+            (((self.bg_attr_hi & bit_mux) != 0) as u8 * 2)
                 | ((self.bg_attr_lo & bit_mux) != 0) as u8
         } else {
             0
@@ -333,7 +333,7 @@ impl PPU {
                     // pixel, so the counter reaching zero on the previous dot
                     // does not advance the pattern before its first pixel.
                     if !(spr_clip && px < 8) {
-                        let pix = ((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2
+                        let pix = (((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2)
                             | ((self.spr_shift_lo[i] & 0x80) != 0) as u8;
                         if pix != 0 && !spr_visible {
                             spr_pixel = pix;
@@ -364,12 +364,15 @@ impl PPU {
         if spr_visible {
             if bg_opaque {
                 if spr_behind {
-                    final_idx = self.read_palette_entry((bg_palette as usize) * 4 + bg_pixel as usize);
+                    final_idx =
+                        self.read_palette_entry((bg_palette as usize) * 4 + bg_pixel as usize);
                 } else {
-                    final_idx = self.read_palette_entry((spr_palette as usize) * 4 + spr_pixel as usize);
+                    final_idx =
+                        self.read_palette_entry((spr_palette as usize) * 4 + spr_pixel as usize);
                 }
             } else {
-                final_idx = self.read_palette_entry((spr_palette as usize) * 4 + spr_pixel as usize);
+                final_idx =
+                    self.read_palette_entry((spr_palette as usize) * 4 + spr_pixel as usize);
             }
         } else if bg_opaque {
             final_idx = self.read_palette_entry((bg_palette as usize) * 4 + bg_pixel as usize);

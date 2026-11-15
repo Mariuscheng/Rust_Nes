@@ -1,3 +1,14 @@
+//! Rust_Nes — a single-threaded NES emulator.
+//!
+//! This file is the platform layer: it owns the window, audio output and
+//! keyboard input, and drives `NesConsole::step_frame`. Everything below
+//! `nes.rs` is platform-independent and only talks through the bus.
+
+// Hardware acronyms (CPU/PPU/APU, OAM/CHR/PRG) and the 6502 mnemonics (LDA,
+// SEI, ...) are the domain vocabulary; renaming them to CamelCase would make
+// the code harder to match against the NESdev references.
+#![allow(clippy::upper_case_acronyms)]
+
 mod apu;
 mod audio;
 mod bus;
@@ -9,14 +20,20 @@ mod nes;
 mod ppu;
 mod ram;
 mod rom;
-mod timing;
 
+// ── Local-only test modules (live in `testing/`, which is not published) ──
 #[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/frame_tests.rs"]
 mod frame_tests;
 #[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/interrupt_poll_tests.rs"]
+mod interrupt_poll_tests;
+#[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/rom_tests.rs"]
 mod rom_tests;
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/schedule_tests.rs"]
+mod schedule_tests;
 
 /// Test-ROM `$6000` observer, kept local with the rest of the harness.
 #[cfg(feature = "local_harness")]
@@ -26,8 +43,8 @@ mod rom_output;
 use audio::AudioOut;
 use cartridge::Cartridge;
 use joypad::Button;
-use nes::NesConsole;
 use minifb::{Key, Window, WindowOptions};
+use nes::NesConsole;
 use std::time::Instant;
 
 fn main() {
@@ -51,8 +68,8 @@ fn main() {
     enable_dpi_awareness();
 
     // ── 1. Load ROM via Cartridge (black box input) ──
-    let cart = Cartridge::from_file(&rom_path)
-        .unwrap_or_else(|e| panic!("Failed to load ROM: {}", e));
+    let cart =
+        Cartridge::from_file(&rom_path).unwrap_or_else(|e| panic!("Failed to load ROM: {}", e));
 
     // ── 2. Build pure-hardware NES console ──
     let mut console = NesConsole::from_cartridge(cart);

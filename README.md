@@ -57,47 +57,53 @@ HEADLESS_FRAMES=180 cargo run --release -- "path/to/rom.nes"
 
 ```
 src/
-├── main.rs           # 進入點（視窗 / headless）
-├── nes.rs            # 模擬器主控（整合 CPU / PPU / APU）
-├── bus/bus.rs        # 主匯流排與 BusInterface
-├── cpu/
-│   ├── core.rs       # 6502 CPU 核心（暫存器、指令分派）
+├── main.rs           # 進入點（視窗 / headless），唯一的平台層
+├── nes.rs            # NesConsole：組裝各元件、step/step_frame、存讀檔
+├── bus.rs            # 主匯流排、記憶體映射、DMA、NMI/IRQ 線
+├── cpu.rs            # CPU 模組入口
+│   ├── core.rs       # 6502 核心（暫存器、指令分派、cycle 預算）
 │   ├── decoder.rs    # 指令解碼表（opcode → instruction + addressing mode）
 │   ├── addressing.rs # 定址模式（含 page-cross 偵測）
+│   ├── interrupt.rs  # NMI/IRQ/BRK 入口與 NMI hijack
 │   └── ops/          # 指令實作（ALU、分支、堆疊、非官方指令…）
-├── ppu/
-│   ├── ppu.rs        # PPU 核心（暫存器、VRAM、調色盤）
+├── ppu.rs            # PPU 核心（暫存器、VRAM、OAM、調色盤）
 │   ├── frame.rs      # 逐 dot 渲染管線
+│   ├── registers.rs  # PPU 暫存器位元定義
 │   └── sprite.rs     # OAM 評估與精靈初始化
-├── apu/              # APU（pulse / triangle / noise / dmc / frame counter）
+├── apu.rs            # APU 入口（frame counter、混音）
+│   └── pulse/triangle/noise/dmc/sweep/envelope/constants.rs
 ├── audio.rs          # 即時音訊輸出（rodio）
-├── rom/              # iNES 解析 + mappers/（9 種 mapper）
+├── rom.rs            # iNES 解析 + mapper 分派
+│   └── mappers/      # 9 種 mapper 實作
 ├── cartridge.rs      # Cartridge 黑盒封裝
-├── ram/ram.rs        # 內部工作 RAM（2KB，含鏡像）
+├── ram.rs            # 內部工作 RAM（2KB，含鏡像）
 └── joypad.rs         # NES 手柄（strobe latch + 序列讀出）
 ```
 
-測試用的 harness、golden 資料與設計筆記**不包含在 repo 內**（`testing/`、`docs/`
-都在 `.gitignore` 裡，只存在本機）。上面 `src/` 的清單就是本 repo 的全部程式碼；
+本機測試 harness 與設計筆記**不包含在 repo 內**（`testing/` 在 `.gitignore` 裡，只存在
+本機）；`docs/` 只發布 [`docs/architecture.md`](docs/architecture.md) 這份架構與寫作
+慣例指南，其餘研究筆記留在本機。上面 `src/` 的清單就是本 repo 的全部程式碼；
 `tools/` 另外放了一個檢查 decoder 是否覆蓋全部 256 個 opcode 的小工具。
 
 ## 🧪 執行測試
 
-repo 內只有單元測試；ROM 回歸與畫面 golden 是本機的私有 harness，由 Cargo feature
-`local_harness` 控制（預設關閉，所以 clone 下來不需要 `testing/` 也能 build 與測試）：
+所有測試（單元測試、blargg ROM 回歸、畫面 golden）都放在本機的 `testing/`，由 Cargo
+feature `local_harness` 控制。因為 `testing/` 不發布，clone 下來的 repo 直接跑
+`cargo test` 會是 0 tests（這是刻意設計：`src/` 不含測試程式碼）。要跑測試需要本機的
+`testing/` 與該 feature：
 
 ```bash
-# 單元測試（快，31 個，含 interrupt poll、padding 白名單與 CHR-ROM 寫入保護回歸）
-cargo test
+# 單元測試（30 個：interrupt poll、schedule table、bus/PPU/APU/joypad/mapper）
+cargo test --release --features local_harness
 
-# 本機 ROM 回歸套件（需要 testing/ 與 .nes 檔）
+# ROM 回歸 + 畫面 golden（45 個）
 cargo test --release --features local_harness -- --ignored
 ```
 
-`testing/` 內的檔案（`rom_tests.rs`、`frame_tests.rs`、`rom_output.rs`、
-`golden_frames.txt`）透過 `src/main.rs` 的 `#[path]` 掛進來，只在 `local_harness`
-feature 開啟時編譯。同一個 feature 也會把 blargg 的 `$6000` 測試結果印到 stdout，
-方便手動跑單一 ROM：
+`testing/` 內的檔案（`*_tests.rs`、`rom_tests.rs`、`frame_tests.rs`、`rom_output.rs`、
+`golden_frames.txt`）透過 `src/` 各模組與 `src/main.rs` 的 `#[path]` 掛進來，只在
+`local_harness` feature 開啟時編譯；單元測試因此仍能存取模組私有欄位。同一個 feature
+也會把 blargg 的 `$6000` 測試結果印到 stdout，方便手動跑單一 ROM：
 
 ```bash
 # bash
@@ -107,7 +113,7 @@ HEADLESS_FRAMES=600 cargo run --release --features local_harness -- "test.nes"
 $env:HEADLESS_FRAMES=600; cargo run --release --features local_harness -- "test.nes"
 ```
 
-目前本機 harness 全綠（46 個 harness 測試，0 失敗）：
+目前本機 harness 全綠（30 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
 
 | 套件 | 結果 |
 |------|------|
@@ -129,6 +135,9 @@ REGEN_GOLDEN=1 cargo test --release --features local_harness -- --ignored golden
 ```
 
 ## 🏗️ 架構說明
+
+模組分層、資料流與 Rust 寫作慣例的完整說明見
+[`docs/architecture.md`](docs/architecture.md)。以下只列各元件的重點。
 
 ### CPU (6502)
 - 暫存器：A, X, Y, PC, SP, P (status)
@@ -173,8 +182,8 @@ CHR 同步的取捨：mapper 寫入後立即同步到 PPU 的 8 KiB CHR 副本�
 
 - MMC5 僅部分實作（見上方 mapper 表）：`$5120-$512B` CHR bank、ExRAM 與 scanline IRQ
   尚未完成。
-- 測試 ROM、ROM 回歸 harness 與畫面 golden 不隨 repo 發布，clone 下來只有單元測試。
-- 設計筆記與除錯工具放在本機的 `docs/`、`testing/`（都在 `.gitignore` 裡）。
+- 測試程式碼全部放在本機 `testing/`（不發布），clone 下來 `cargo test` 會是 0 tests。
+- `docs/` 只發布架構指南，其餘設計筆記與除錯腳本留在本機。
 
 ## 📝 License
 

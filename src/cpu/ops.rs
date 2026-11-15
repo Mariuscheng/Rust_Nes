@@ -1,3 +1,9 @@
+//! Instruction handlers, grouped by operation family.
+//!
+//! Every module exports `pub(crate)` functions with the `op_*` naming scheme;
+//! `CPU::step` dispatches to them after decoding. Handlers perform their bus
+//! accesses in hardware order and return any additional cycles they needed.
+
 // Load / Store / Register transfers / Increments / Decrements
 mod load_store;
 pub(crate) use load_store::*;

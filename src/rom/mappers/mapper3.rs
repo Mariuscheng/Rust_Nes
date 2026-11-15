@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper3.rs
-// Mapper 3 — CNROM
+//! Mapper 3 — CNROM.
 
 use super::Mapper;
 

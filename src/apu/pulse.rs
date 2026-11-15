@@ -68,11 +68,9 @@ impl PulseChannel {
                 self.timer_period = (self.timer_period & 0x700) | data as u16;
             }
             3 => {
-                self.timer_period =
-                    (self.timer_period & 0xFF) | (((data & 7) as u16) << 8);
+                self.timer_period = (self.timer_period & 0xFF) | (((data & 7) as u16) << 8);
                 if self.enabled {
-                    self.length_counter =
-                        LENGTH_TABLE[(data >> 3) as usize];
+                    self.length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
                 self.envelope.start = true;
                 self.duty_pos = 0;

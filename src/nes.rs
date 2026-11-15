@@ -50,14 +50,14 @@ impl NesConsole {
         cpu.reset(&mut bus);
 
         let last_ppu_frame = bus.ppu_frame();
-        let console = NesConsole {
+
+        NesConsole {
             cpu,
             bus,
             last_ppu_frame,
             #[cfg(feature = "local_harness")]
             frame_callback: None,
-        };
-        console
+        }
     }
 
     /// Register a callback invoked after every completed frame.
@@ -238,7 +238,11 @@ impl NesConsole {
             return;
         }
         let mut offset = 1usize;
-        let rd = |d: &[u8], o: &mut usize| -> u8 { let v = d[*o]; *o += 1; v };
+        let rd = |d: &[u8], o: &mut usize| -> u8 {
+            let v = d[*o];
+            *o += 1;
+            v
+        };
         let rd16 = |d: &[u8], o: &mut usize| -> u16 {
             let v = u16::from_le_bytes([d[*o], d[*o + 1]]);
             *o += 2;
@@ -309,17 +313,28 @@ impl NesConsole {
         }
 
         let mapper_len = {
-            let len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
             offset += 4;
             len as usize
         };
         if mapper_len > 0 && offset + mapper_len <= data.len() {
-            self.bus.mapper_load_state(&data[offset..offset + mapper_len]);
+            self.bus
+                .mapper_load_state(&data[offset..offset + mapper_len]);
             offset += mapper_len;
         }
 
         let apu_len = {
-            let len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+            let len = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
             offset += 4;
             len as usize
         };

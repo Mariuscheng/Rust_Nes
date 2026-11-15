@@ -19,9 +19,12 @@ savestate.dat
 *.ferrite-bak
 *.bak
 
-# Local-only test harness and design docs (not published to GitHub)
+# Local-only test harness (not published to GitHub)
 /testing/
-/docs/
+
+# Design notes are local; the architecture guide is published.
+/docs/*
+!/docs/architecture.md
 
 # Downloaded test ROM collections
 /nes-test-roms-master/

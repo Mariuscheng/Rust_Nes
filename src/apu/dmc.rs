@@ -67,13 +67,11 @@ impl DmcChannel {
             0 => {
                 self.irq_enabled = (data & 0x80) != 0;
                 self.loop_flag = (data & 0x40) != 0;
-                self.timer_period =
-                    DMC_PERIOD_TABLE[(data & 0x0F) as usize];
+                self.timer_period = DMC_PERIOD_TABLE[(data & 0x0F) as usize];
             }
             1 => self.output_level = data & 0x7F,
             2 => {
-                self.sample_address =
-                    0xC000u16.wrapping_add((data as u16) << 6);
+                self.sample_address = 0xC000u16.wrapping_add((data as u16) << 6);
             }
             3 => self.sample_length = (data as u16) * 16 + 1,
             _ => {}

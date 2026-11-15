@@ -107,17 +107,19 @@ pub(crate) fn op_rra(
 }
 
 /// SAX: Store A & X to memory
-pub(crate) fn op_sax(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_sax(cpu: &mut CPU, bus: &mut dyn CpuBus, mode: AddressMode, current_pc: u16) {
     let res = get_operand_address_with_page(cpu, &mode, bus, current_pc.wrapping_add(1));
     // Indexed addressing modes perform a dummy read before the write.
     // IndirectX already performs its dummy read at (zp+X) during address
     // calculation; no additional dummy read at the final effective address.
-    if !matches!(mode, AddressMode::ZeroPage | AddressMode::Absolute | AddressMode::IndirectX | AddressMode::ZeroPageX | AddressMode::ZeroPageY) {
+    if !matches!(
+        mode,
+        AddressMode::ZeroPage
+            | AddressMode::Absolute
+            | AddressMode::IndirectX
+            | AddressMode::ZeroPageX
+            | AddressMode::ZeroPageY
+    ) {
         let dummy_addr = res.dummy_addr.unwrap_or(res.addr);
         bus.read(dummy_addr);
     }
@@ -190,12 +192,7 @@ pub(crate) fn op_isc(
 }
 
 /// ANC: AND immediate, then copy bit 7 to carry
-pub(crate) fn op_anc(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_anc(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let imm = bus.read(current_pc.wrapping_add(1));
     cpu.a &= imm;
     update_zero_and_negative_flags(cpu, cpu.a);
@@ -204,12 +201,7 @@ pub(crate) fn op_anc(
 }
 
 /// ALR: AND immediate, then LSR A
-pub(crate) fn op_alr(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_alr(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let imm = bus.read(current_pc.wrapping_add(1));
     cpu.a &= imm;
     // LSR A
@@ -219,12 +211,7 @@ pub(crate) fn op_alr(
 }
 
 /// ARR: AND immediate, then ROR A (with special carry/overflow behavior)
-pub(crate) fn op_arr(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_arr(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let imm = bus.read(current_pc.wrapping_add(1));
     cpu.a &= imm;
     let old_carry = cpu.carry();
@@ -241,12 +228,7 @@ pub(crate) fn op_arr(
 }
 
 /// AXS: A & X, store into X, then subtract immediate (store result in X)
-pub(crate) fn op_axs(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_axs(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let imm = bus.read(current_pc.wrapping_add(1));
     let and_val = cpu.a & cpu.x;
     let result = and_val.wrapping_sub(imm);
@@ -256,12 +238,7 @@ pub(crate) fn op_axs(
 }
 
 /// ANX: A & X & imm -> A, X (also known as ATX/XAA)
-pub(crate) fn op_anx(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_anx(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let imm = bus.read(current_pc.wrapping_add(1));
     cpu.a = imm;
     cpu.x = imm;
@@ -270,12 +247,7 @@ pub(crate) fn op_anx(
 
 /// SYA: Store Y & (hi + 1) at abs,X (opcode 0x9C)
 /// Address does NOT cross page: hi stays as operand hi byte, only lo + X wraps.
-pub(crate) fn op_sya(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_sya(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let lo = bus.read(current_pc.wrapping_add(1));
     let hi = bus.read(current_pc.wrapping_add(2));
     let addr = ((hi as u16) << 8) | (lo.wrapping_add(cpu.x) as u16);
@@ -287,12 +259,7 @@ pub(crate) fn op_sya(
 
 /// SXA: Store X & (hi + 1) at abs,Y (opcode 0x9E)
 /// Address does NOT cross page: hi stays as operand hi byte, only lo + Y wraps.
-pub(crate) fn op_sxa(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_sxa(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     let lo = bus.read(current_pc.wrapping_add(1));
     let hi = bus.read(current_pc.wrapping_add(2));
     let addr = ((hi as u16) << 8) | (lo.wrapping_add(cpu.y) as u16);
@@ -307,12 +274,7 @@ pub(crate) fn op_sxa(
 /// On real hardware the address high byte is NOT incremented when the index
 /// crosses a page — the value is simply lost — which is also why these
 /// opcodes never take the page-cross cycle penalty.
-pub(crate) fn op_ahx(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_ahx(cpu: &mut CPU, bus: &mut dyn CpuBus, mode: AddressMode, current_pc: u16) {
     let value = cpu.a & cpu.x;
     let (addr, hi) = match mode {
         AddressMode::IndirectY => {
@@ -335,12 +297,7 @@ pub(crate) fn op_ahx(
 
 /// TAS/SHS (0x9B): `A = X = SP = A & X`, then an unstable store of
 /// `A & (high byte + 1)` at abs,Y with the same broken-address behaviour.
-pub(crate) fn op_tas(
-    cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_tas(cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     cpu.a &= cpu.x;
     cpu.x = cpu.a;
     cpu.sp = cpu.a;
@@ -371,12 +328,7 @@ pub(crate) fn op_las(
 
 /// KIL: On NES 2A03, KIL opcodes are 2-byte NOPs that read and discard the operand byte.
 /// Unlike the original NMOS 6502, they do NOT halt the CPU.
-pub(crate) fn op_kil(
-    _cpu: &mut CPU,
-    bus: &mut dyn CpuBus,
-    _mode: AddressMode,
-    current_pc: u16,
-) {
+pub(crate) fn op_kil(_cpu: &mut CPU, bus: &mut dyn CpuBus, _mode: AddressMode, current_pc: u16) {
     // Dummy read of the operand byte (same as NOP Immediate)
     bus.read(current_pc.wrapping_add(1));
 }

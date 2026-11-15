@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper7.rs
-// Mapper 7 — AxROM
+//! Mapper 7 — AxROM.
 
 use super::Mapper;
 
@@ -26,7 +25,9 @@ impl Mapper for Mapper7 {
                     return 0;
                 }
                 self.prg_rom
-                    .get(((self.prg_bank as usize) % bank_count) * 0x8000 + (addr - 0x8000) as usize)
+                    .get(
+                        ((self.prg_bank as usize) % bank_count) * 0x8000 + (addr - 0x8000) as usize,
+                    )
                     .copied()
                     .unwrap_or(0)
             }

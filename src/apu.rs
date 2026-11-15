@@ -29,9 +29,7 @@ use self::triangle::TriangleChannel;
 ///
 /// These values are calibrated against blargg's `apu_test` and are the single
 /// place to tune frame-counter timing.
-const FRAME_EVENTS: [i64; 9] = [
-    7457, 14913, 22371, 29829, 14913, 29829, 29830, 29830, 37281,
-];
+const FRAME_EVENTS: [i64; 9] = [7457, 14913, 22371, 29829, 14913, 29829, 29830, 29830, 37281];
 
 /// NES APU（Audio Processing Unit）
 ///
@@ -145,8 +143,7 @@ impl APU {
                     // with a one-byte sample the length counter is already 0
                     // while its byte is still in the output unit, and the DMC
                     // must keep playing it (7-dmc_basics test 19).
-                    let still_playing =
-                        self.dmc.enabled && !self.dmc.sample_buffer_empty;
+                    let still_playing = self.dmc.enabled && !self.dmc.sample_buffer_empty;
                     self.dmc.reload_sample();
                     if !still_playing {
                         self.dmc.bits_remaining = 8;
@@ -190,7 +187,11 @@ impl APU {
                 // Even cycle: offset=0，下一個 tick 就開始計數。
                 // Odd cycle:  offset=-2，寫入落在 2-cycle 網格之間，整個第一段
                 //             序列延後 2 個 tick（跳過一個 clock）。
-                self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 { 0 } else { -2 };
+                self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 {
+                    0
+                } else {
+                    -2
+                };
                 self.frame_step = self.frame_step_offset;
                 self.frame_first_sequence = true;
                 // Mode 0 re-arms the frame IRQ: first flag 29831 clocks after
@@ -198,7 +199,12 @@ impl APU {
                 // (the write lands between two APU clocks).
                 self.frame_irq_arm = 0;
                 self.frame_irq_countdown = if self.frame_mode == 0 && !self.frame_irq_inhibit {
-                    29831 + if (self.total_cpu_cycles & 1) == 0 { 0 } else { 1 }
+                    29831
+                        + if (self.total_cpu_cycles & 1) == 0 {
+                            0
+                        } else {
+                            1
+                        }
                 } else {
                     0
                 };
@@ -367,8 +373,7 @@ impl APU {
         if self.sample_accumulator >= CPU_FREQ_NUMER {
             self.sample_accumulator -= CPU_FREQ_NUMER;
             let raw = self.mix();
-            let filtered = self.hpf_alpha
-                * (self.hpf_last_output + raw - self.hpf_last_input);
+            let filtered = self.hpf_alpha * (self.hpf_last_output + raw - self.hpf_last_input);
             self.hpf_last_input = raw;
             self.hpf_last_output = filtered;
             self.audio_buffer.push(filtered);
@@ -869,89 +874,6 @@ impl APU {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn apu_pulse_produces_samples() {
-        let mut apu = APU::new(44100);
-        let _ = apu.write_register(0x4015, 0x01);
-        let _ = apu.write_register(0x4000, 0b1011_1111);
-        let _ = apu.write_register(0x4002, 0x70);
-        let _ = apu.write_register(0x4003, 0x08);
-        for _ in 0..=44100 / 60 {
-            let _ = apu.tick_one();
-        }
-        let samples = apu.drain_audio_buffer();
-        assert!(!samples.is_empty());
-        let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-        assert!(peak > 0.0, "APU mixer produced only silence");
-    }
-
-    #[test]
-    fn apu_status_reflects_length_counters() {
-        let mut apu = APU::new(44100);
-        let _ = apu.write_register(0x4015, 0x0F);
-        let _ = apu.write_register(0x4003, 0x08);
-        let _ = apu.write_register(0x4007, 0x08);
-        let _ = apu.write_register(0x400B, 0x08);
-        let _ = apu.write_register(0x400F, 0x08);
-        assert_eq!(apu.read_status() & 0x0F, 0x0F);
-    }
-
-    #[test]
-    fn apu_reset_clears_state() {
-        let mut apu1 = APU::new(44100);
-        let _ = apu1.write_register(0x4015, 0x0F);
-        let _ = apu1.write_register(0x4003, 0x08);
-        let mut apu2 = APU::new(44100);
-        assert_eq!(apu2.read_status() & 0x0F, 0);
-    }
-
-    #[test]
-    fn apu_frame_counter_clears_irq_on_read() {
-        let mut apu = APU::new(44100);
-        apu.frame_interrupt = true;
-        assert!(apu.read_status() & 0x40 != 0);
-        assert!(apu.read_status() & 0x40 == 0);
-    }
-
-    #[test]
-    fn apu_frame_counter_odd_jitter_sequence_length() {
-        // Odd write cycle: the write lands between two APU clocks, so the flag
-        // is first asserted one CPU clock later than after an even write.
-        let mut apu = APU::new(44100);
-        apu.total_cpu_cycles = 1; // odd write cycle
-        let _ = apu.write_register(0x4017, 0x00); // mode 0, IRQ enabled
-
-        for _ in 0..29831 {
-            let _ = apu.tick_one();
-        }
-        assert!(
-            !apu.frame_interrupt,
-            "odd write: flag is still clear at 29831"
-        );
-
-        let _ = apu.tick_one();
-        assert!(apu.frame_interrupt, "odd write: flag is set at 29832");
-    }
-
-    #[test]
-    fn apu_frame_counter_even_jitter_sequence_length() {
-        // Even write cycle: the flag is first asserted 29831 clocks after the
-        // mode-0 `$4017` write (apu_test 4-jitter pins both edges: clear at
-        // 29830, set by 29832), then held for a three-cycle window.
-        let mut apu = APU::new(44100);
-        apu.total_cpu_cycles = 0; // even write cycle
-        let _ = apu.write_register(0x4017, 0x00); // mode 0, IRQ enabled
-
-        for _ in 0..29830 {
-            let _ = apu.tick_one();
-        }
-        assert!(!apu.frame_interrupt, "IRQ must not be set at 29830");
-
-        let _ = apu.tick_one();
-        assert!(apu.frame_interrupt, "IRQ is set at 29831");
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/apu_tests.rs"]
+mod tests;

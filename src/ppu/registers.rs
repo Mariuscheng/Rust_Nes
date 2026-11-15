@@ -1,4 +1,4 @@
-// src/ppu/registers.rs
+//! PPU register bitfields (`PPUCTRL` / `PPUMASK` / `PPUSTATUS`).
 
 #[derive(Debug, Default)]
 pub struct PpuStatus {

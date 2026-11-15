@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper1.rs
-// Mapper 1 — MMC1
+//! Mapper 1 — MMC1.
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;

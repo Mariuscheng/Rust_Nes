@@ -1,7 +1,6 @@
-// src/ppu/sprite.rs
-// OAM evaluation and sprite initialization for the next scanline
+//! OAM evaluation and sprite initialization for the next scanline.
 
-use super::ppu::PPU;
+use super::PPU;
 
 /// Pattern-table base address used by a sprite tile.
 ///
@@ -12,7 +11,11 @@ use super::ppu::PPU;
 /// `$FE/$FF`, and so on.
 pub(super) fn sprite_pattern_bank(sprite_h: u16, tile_id: u8, ctrl_bank: u16) -> usize {
     let bank = if sprite_h == 16 {
-        if (tile_id & 0x01) != 0 { 0x1000 } else { 0x0000 }
+        if (tile_id & 0x01) != 0 {
+            0x1000
+        } else {
+            0x0000
+        }
     } else {
         ctrl_bank
     };
@@ -28,7 +31,7 @@ impl PPU {
         let cycle = self.cycle;
 
         // Cycles 1-64: Clear secondary OAM
-        if cycle >= 1 && cycle <= 64 {
+        if (1..=64).contains(&cycle) {
             let idx = ((cycle - 1) / 2) as usize;
             if idx < 32 {
                 self.sec_oam[idx] = 0xFF;
@@ -46,8 +49,8 @@ impl PPU {
         }
 
         // Cycles 65-256: Read and evaluate sprites
-        if cycle >= 65 && cycle <= 256 {
-            let is_read_cycle = (cycle % 2) != 0; // odd = read OAM, even = write sec OAM
+        if (65..=256).contains(&cycle) {
+            let is_read_cycle = !cycle.is_multiple_of(2); // odd = read OAM, even = write sec OAM
 
             if is_read_cycle {
                 // ── Odd cycle: read from primary OAM ──
@@ -96,9 +99,11 @@ impl PPU {
                 // Write at oam_eval_byte - 1 (the byte we read on the previous odd cycle)
                 if self.oam_eval_byte >= 1 && self.oam_eval_byte <= 4 {
                     if self.oam_eval_m < 8 {
-                        let sec_idx = (self.oam_eval_m as usize) * 4 + (self.oam_eval_byte - 1) as usize;
+                        let sec_idx =
+                            (self.oam_eval_m as usize) * 4 + (self.oam_eval_byte - 1) as usize;
                         if sec_idx < 32 {
-                            self.sec_oam[sec_idx] = self.oam_eval_sprite_buf[(self.oam_eval_byte - 1) as usize];
+                            self.sec_oam[sec_idx] =
+                                self.oam_eval_sprite_buf[(self.oam_eval_byte - 1) as usize];
                         }
                     }
                     if self.oam_eval_byte == 4 {
@@ -166,18 +171,14 @@ impl PPU {
 
             // OAM Y is the sprite's top line minus one.
             let top = sprite_y + 1;
-            if next_line < top || next_line >= top + sprite_h as u16 {
+            if next_line < top || next_line >= top + sprite_h {
                 continue;
             }
 
             let row = next_line - top;
             let flip_v = (attr & 0x80) != 0;
             let flip_h = (attr & 0x40) != 0;
-            let row_in_sprite = if flip_v {
-                (sprite_h as u16 - 1) - row
-            } else {
-                row
-            };
+            let row_in_sprite = if flip_v { (sprite_h - 1) - row } else { row };
 
             // Determine tile number and row within tile
             let (tile_num, row_in_tile) = if sprite_h == 16 {
@@ -190,11 +191,7 @@ impl PPU {
                 (tile_id as u16, row_in_sprite as u8)
             };
 
-            let bank = sprite_pattern_bank(
-                sprite_h,
-                tile_id,
-                self.ctrl.sprite_pattern_addr,
-            );
+            let bank = sprite_pattern_bank(sprite_h, tile_id, self.ctrl.sprite_pattern_addr);
 
             let lo = self.chr_ram[bank + tile_num as usize * 16 + row_in_tile as usize];
             let hi = self.chr_ram[bank + tile_num as usize * 16 + row_in_tile as usize + 8];
@@ -221,28 +218,6 @@ impl PPU {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::sprite_pattern_bank;
-
-    #[test]
-    fn eight_by_eight_sprites_follow_ppuctrl() {
-        // PPUCTRL bit 3 picks the table for every sprite.
-        assert_eq!(sprite_pattern_bank(8, 0x00, 0x0000), 0x0000);
-        assert_eq!(sprite_pattern_bank(8, 0x00, 0x1000), 0x1000);
-        assert_eq!(sprite_pattern_bank(8, 0xFE, 0x0000), 0x0000);
-        assert_eq!(sprite_pattern_bank(8, 0xFF, 0x1000), 0x1000);
-    }
-
-    #[test]
-    fn eight_by_sixteen_sprites_ignore_ppuctrl() {
-        // Hardware ignores PPUCTRL bit 3 here: the tile index's low bit selects
-        // the bank, so one sprite may span both 4 KiB tables.
-        assert_eq!(sprite_pattern_bank(16, 0x00, 0x1000), 0x0000);
-        assert_eq!(sprite_pattern_bank(16, 0x01, 0x0000), 0x1000);
-        assert_eq!(sprite_pattern_bank(16, 0x02, 0x1000), 0x0000);
-        assert_eq!(sprite_pattern_bank(16, 0x03, 0x0000), 0x1000);
-        assert_eq!(sprite_pattern_bank(16, 0xFE, 0x1000), 0x0000);
-        assert_eq!(sprite_pattern_bank(16, 0xFF, 0x0000), 0x1000);
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../../testing/sprite_tests.rs"]
+mod tests;

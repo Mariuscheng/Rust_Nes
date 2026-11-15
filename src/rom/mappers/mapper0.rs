@@ -1,5 +1,4 @@
-// src/rom/mappers/mapper0.rs
-// Mapper 0 — NROM
+//! Mapper 0 — NROM.
 
 use super::Mapper;
 
@@ -36,11 +35,8 @@ impl Mapper for Mapper0 {
     }
 
     fn write_prg(&mut self, addr: u16, data: u8) {
-        match addr {
-            0x6000..=0x7FFF => {
-                self.wram[(addr - 0x6000) as usize] = data;
-            }
-            _ => {}
+        if let 0x6000..=0x7FFF = addr {
+            self.wram[(addr - 0x6000) as usize] = data;
         }
     }
 

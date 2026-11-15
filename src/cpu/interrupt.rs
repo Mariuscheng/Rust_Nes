@@ -51,7 +51,6 @@ impl CPU {
         self.poll_iflag = true;
         self.poll_delay = 0;
 
-        self.last_cycles = 7;
         7
     }
 
@@ -92,8 +91,6 @@ impl CPU {
         let lo = bus.read(lo_addr) as u16;
         let hi = bus.read(hi_addr) as u16;
         self.pc = (hi << 8) | lo;
-
-        self.last_cycles = 7;
     }
 
     fn stack_push_u16(&mut self, bus: &mut dyn CpuBus, data: u16) {

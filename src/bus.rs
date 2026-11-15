@@ -1,3 +1,5 @@
+//! Bus layer: memory map, PPU/APU register I/O, OAM DMA and interrupt lines.
+
 use crate::apu::APU;
 use crate::constants::PRG_ROM_START;
 use crate::joypad::Joypad;
@@ -582,108 +584,6 @@ impl BusInterface for MainBus {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::rom::Mirroring;
-    use crate::rom::mappers::Mapper0;
-
-    fn test_bus() -> MainBus {
-        let mapper = MapperVariant::Mapper0(Mapper0::new(vec![0u8; 16 * 1024], vec![0u8; 8 * 1024]));
-        MainBus::new(
-            mapper,
-            Ram::new(),
-            PPU::new(Mirroring::HORIZONTAL),
-            Joypad::new(),
-            Joypad::new(),
-            APU::new(44_100),
-        )
-    }
-
-    #[test]
-    fn oam_dma_is_queued_then_transfers_page() {
-        let mut bus = test_bus();
-
-        for i in 0..256u16 {
-            BusInterface::write(&mut bus, 0x0200 + i, i as u8);
-        }
-
-        // Writing $4014 only queues the transfer; the CPU keeps running.
-        BusInterface::write(&mut bus, 0x4014, 0x02);
-        assert_eq!(bus.take_dma_request(), Some(0x02));
-        assert!(bus.ppu.oam.iter().all(|&b| b == 0));
-
-        // Servicing it halts the CPU for 513/514 cycles and copies OAM.
-        let before = BusInterface::cpu_cycles(&bus);
-        let cycles = bus.run_dma(0x02);
-        assert!(cycles == 513 || cycles == 514, "unexpected DMA length {cycles}");
-        assert_eq!(BusInterface::cpu_cycles(&bus) - before, cycles as u64);
-        for i in 0..256usize {
-            assert_eq!(bus.ppu.oam[i], i as u8, "OAM byte {i}");
-        }
-    }
-
-    #[test]
-    fn chr_refreshes_after_mapper_register_write() {
-        let mut bus = mmc3_test_bus();
-        bus.refresh_chr();
-        assert_eq!(bus.ppu.chr_ram[0x1000], 0);
-
-        // MMC3 CHR mode 0: select CHR register 2, then point it at bank 5.
-        BusInterface::write(&mut bus, 0x8000, 2);
-        BusInterface::write(&mut bus, 0x8001, 5);
-        assert_eq!(bus.ppu.chr_ram[0x1000], 5);
-    }
-
-    /// 16 KB CHR-ROM where 1 KB bank `k` is filled with byte `k`.
-    fn mmc3_test_bus() -> MainBus {
-        use crate::rom::mappers::Mapper4;
-
-        let mut chr = Vec::with_capacity(16 * 1024);
-        for bank in 0..16u8 {
-            chr.extend(std::iter::repeat(bank).take(1024));
-        }
-        let mapper = MapperVariant::Mapper4(Mapper4::new(
-            vec![0u8; 32 * 1024],
-            chr,
-            Mirroring::HORIZONTAL,
-            false,
-        ));
-        MainBus::new(
-            mapper,
-            Ram::new(),
-            PPU::new(Mirroring::HORIZONTAL),
-            Joypad::new(),
-            Joypad::new(),
-            APU::new(44_100),
-        )
-    }
-
-    #[test]
-    fn chr_refresh_only_copies_banks_a_write_can_touch() {
-        let mut bus = mmc3_test_bus();
-        bus.refresh_chr();
-
-        // Poke both halves of the pattern table. A real copy overwrites the
-        // pokes, so they double as a marker for "did this write refresh?".
-        bus.ppu.chr_ram[0x0000] = 0xAA;
-        bus.ppu.chr_ram[0x1000] = 0xAA;
-
-        // IRQ latch / reload / enable never change CHR banks: no copy at all.
-        BusInterface::write(&mut bus, 0xC000, 0x10);
-        BusInterface::write(&mut bus, 0xC001, 0);
-        BusInterface::write(&mut bus, 0xE001, 0);
-        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
-        assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
-
-        // Selecting a register changes nothing by itself.
-        BusInterface::write(&mut bus, 0x8000, 2);
-        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
-        assert_eq!(bus.ppu.chr_ram[0x1000], 0xAA);
-
-        // R2 feeds $1000-$1FFF, so only that half is re-copied.
-        BusInterface::write(&mut bus, 0x8001, 5);
-        assert_eq!(bus.ppu.chr_ram[0x1000], 5);
-        assert_eq!(bus.ppu.chr_ram[0x0000], 0xAA);
-    }
-}
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/bus_tests.rs"]
+mod tests;

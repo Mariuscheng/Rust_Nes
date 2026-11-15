@@ -1,5 +1,4 @@
-// src/rom/mapper.rs
-// Mapper trait 定義與輔助函式
+//! `Mapper` trait and the helpers shared by mapper implementations.
 
 use std::fs;
 use std::path::Path;
@@ -19,13 +18,13 @@ pub(super) fn read_u8_slice(data: &[u8], off: &mut usize) -> u8 {
 /// Returns true if a save file existed and was loaded.
 pub fn load_battery_save<PRAM: AsMut<[u8]>>(path: &str, ram: &mut PRAM) -> bool {
     let sav_path = Path::new(path).with_extension("sav");
-    if sav_path.exists() {
-        if let Ok(data) = fs::read(&sav_path) {
-            let ram = ram.as_mut();
-            let len = data.len().min(ram.len());
-            ram[..len].copy_from_slice(&data[..len]);
-            return true;
-        }
+    if sav_path.exists()
+        && let Ok(data) = fs::read(&sav_path)
+    {
+        let ram = ram.as_mut();
+        let len = data.len().min(ram.len());
+        ram[..len].copy_from_slice(&data[..len]);
+        return true;
     }
     false
 }
