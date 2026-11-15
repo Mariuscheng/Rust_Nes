@@ -140,10 +140,19 @@ impl APU {
                 let enable_dmc = (data & 0x10) != 0;
                 self.dmc_interrupt = false;
                 if enable_dmc && self.dmc.bytes_remaining == 0 {
+                    // Starting the DMC reloads its length counter. The sample
+                    // buffer is only reset when no byte is still being played:
+                    // with a one-byte sample the length counter is already 0
+                    // while its byte is still in the output unit, and the DMC
+                    // must keep playing it (7-dmc_basics test 19).
+                    let still_playing =
+                        self.dmc.enabled && !self.dmc.sample_buffer_empty;
                     self.dmc.reload_sample();
-                    self.dmc.bits_remaining = 8;
-                    self.dmc.sample_buffer_empty = true;
-                    self.dmc.silence_flag = true;
+                    if !still_playing {
+                        self.dmc.bits_remaining = 8;
+                        self.dmc.sample_buffer_empty = true;
+                        self.dmc.silence_flag = true;
+                    }
                 }
                 self.dmc.enabled = enable_dmc;
                 if !self.dmc.enabled {
