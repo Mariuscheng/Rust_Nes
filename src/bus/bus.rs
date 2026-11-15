@@ -252,7 +252,10 @@ impl MainBus {
             BusInterface::tick(self); // read cycle
             let val = self.peek(base.wrapping_add(i));
             BusInterface::tick(self); // write cycle
-            self.ppu.oam[i as usize] = val;
+            // DMA starts at the current OAMADDR and wraps at 256; the address
+            // itself is left untouched (sprite_ram tests 7 and 8).
+            let idx = self.ppu.oam_addr.wrapping_add(i as u8);
+            self.ppu.oam[idx as usize] = val;
         }
 
         513 + extra
