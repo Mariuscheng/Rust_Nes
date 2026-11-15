@@ -128,7 +128,11 @@ impl Rom {
 
     pub fn get_mapper(self) -> MapperVariant {
         match self.mapper_id {
-            0 => MapperVariant::Mapper0(mappers::Mapper0::new(self.prg_rom, self.chr_rom)),
+            0 => MapperVariant::Mapper0(mappers::Mapper0::new(
+                self.prg_rom,
+                self.chr_rom,
+                self.prg_ram_battery,
+            )),
             1 => MapperVariant::Mapper1(mappers::Mapper1::new(
                 self.prg_rom,
                 self.chr_rom,

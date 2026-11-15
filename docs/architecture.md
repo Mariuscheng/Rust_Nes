@@ -81,7 +81,7 @@ enum + `delegate!` 做靜態分派（避免 `Box<dyn Mapper>` 的虛擬呼叫與
 方法。CHR bank 切換透過 `take_chr_dirty_blocks()` 只重抄受影響的 1 KiB block。
 
 Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
-`battery_ram_mut()` 暴露自己的 PRG RAM（MMC1/MMC3/MMC5/FME-7），`Cartridge::from_file`
+`battery_ram_mut()` 暴露自己的 PRG RAM（NROM/MMC1/MMC3/MMC5/FME-7），`Cartridge::from_file`
 在開機時把 `<rom>.sav` 讀進那塊 RAM，平台層結束模擬時呼叫
 `NesConsole::save_battery()` 寫回同名檔案。mapper 不需要知道檔案路徑，也不各自
 處理存檔格式。
@@ -192,7 +192,7 @@ Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
 | 畫面回歸 | `testing/frame_tests.rs` | 對 `golden_frames.txt` 比 FNV-1a hash，抓渲染回歸。 |
 
 ```bash
-cargo test --release --features local_harness                    # 32 個單元測試
+cargo test --release --features local_harness                    # 33 個單元測試
 cargo test --release --features local_harness -- --ignored      # 45 個 ROM/golden
 ```
 

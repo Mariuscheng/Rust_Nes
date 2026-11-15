@@ -13,7 +13,7 @@
 - **即時音訊輸出** — 透過 rodio 以 44100Hz 即時播放，含高通濾波器與低延遲佇列控制
 - **輸入支援** — 完整 NES 手柄模擬（鍵盤映射）
 - **Save / Load State** — 即時存檔與讀檔（F5 存檔 / F7 讀檔）
-- **Battery Save** — 卡匣電池存檔：啟動時讀取與 ROM 同名的 `.sav`，每 30 秒自動存檔、關閉模擬器時再寫回
+- **Battery Save** — 卡匣電池存檔（NROM/MMC1/MMC3/MMC5/FME-7）：啟動時讀取與 ROM 同名的 `.sav`，每 30 秒自動存檔、關閉模擬器時再寫回
 - **Headless 模式** — 支援無視窗執行以進行自動化測試
 - **Mapper 支援** — NROM(0)、MMC1(1)、UxROM(2)、CNROM(3)、MMC3(4)、MMC5(5)、AxROM(7)、VRC6(24/26)、FME-7(69)
 
@@ -94,7 +94,7 @@ feature `local_harness` 控制。因為 `testing/` 不發布，clone 下來的 r
 `testing/` 與該 feature：
 
 ```bash
-# 單元測試（32 個：interrupt poll、schedule table、battery save、bus/PPU/APU/joypad/mapper）
+# 單元測試（33 個：interrupt poll、schedule table、battery save、bus/PPU/APU/joypad/mapper）
 cargo test --release --features local_harness
 
 # ROM 回歸 + 畫面 golden（45 個）
@@ -106,7 +106,7 @@ cargo test --release --features local_harness -- --ignored
 `local_harness` feature 開啟時編譯；單元測試因此仍能存取模組私有欄位。`src/main.rs`
 只有一行測試模組宣告，產品路徑完全不含測試程式碼。
 
-目前本機 harness 全綠（32 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
+目前本機 harness 全綠（33 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
 
 | 套件 | 結果 |
 |------|------|
