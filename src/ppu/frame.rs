@@ -127,15 +127,6 @@ impl PPU {
         let is_visible = self.scanline < 240;
         let is_pre_render = self.scanline == 261;
 
-        // ── BG shift register advancement ──
-        // Shift BEFORE rendering: the pixel output comes from post-shift state
-        if (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336) {
-            self.bg_shift_lo <<= 1;
-            self.bg_shift_hi <<= 1;
-            self.bg_attr_lo <<= 1;
-            self.bg_attr_hi <<= 1;
-        }
-
         // ── A12 rising edge detection (for MMC3 IRQ) ──
         self.compute_a12_rising();
 
@@ -147,14 +138,28 @@ impl PPU {
         // ── Tile fetches ──
         let sub_cycle = cycle % 8;
 
-        // Render pixel from post-shift state
+        // Render the pixel from the current shift-register state: bit 15 is
+        // the pixel leaving the register on this dot.
         if cycle >= 1 && cycle <= 256 {
             if is_visible {
                 self.render_pixel();
             }
         }
 
-        // Fetch new tile data (loads into shift register low bits at sub_cycle=7)
+        // ── BG shift register advancement ──
+        // Shift AFTER rendering, so the pixel at px uses the bit that was at
+        // position 15 at the start of the dot. The prefetch also shifts, which
+        // moves the first prefetched tile into the high byte before the second
+        // one is loaded.
+        if (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336) {
+            self.bg_shift_lo <<= 1;
+            self.bg_shift_hi <<= 1;
+            self.bg_attr_lo <<= 1;
+            self.bg_attr_hi <<= 1;
+        }
+
+        // Fetch new tile data. The fetched tile is loaded into the low byte at
+        // sub_cycle 0 (the end of the eight-dot fetch group).
         if cycle >= 1 && cycle <= 256 {
             self.fetch_bg_tile(sub_cycle);
         }
@@ -227,8 +232,11 @@ impl PPU {
                 let bank = self.ctrl.background_pattern_addr;
                 let pattern_addr = bank + tile_id * 16 + fine_y as u16 + 8;
                 self.bg_high_byte = self.chr_ram[pattern_addr as usize];
-
-                // Determine attribute palette for this tile
+            }
+            0 => {
+                // End of the eight-dot fetch group: move the fetched tile into
+                // the low byte. The next group's NT read starts on the
+                // following dot, so the load belongs to sub-cycle 0.
                 let quad_x = (coarse_x % 4) >= 2;
                 let quad_y = (coarse_y % 4) >= 2;
                 let shift = (if quad_y { 4 } else { 0 }) + (if quad_x { 2 } else { 0 });
@@ -237,7 +245,6 @@ impl PPU {
                 let attr_lo = if (palette_bits & 0x01) != 0 { 0xFF } else { 0x00 };
                 let attr_hi = if (palette_bits & 0x02) != 0 { 0xFF } else { 0x00 };
 
-                // Load fetched tile into lower 8 bits of shift registers
                 self.bg_shift_lo = (self.bg_shift_lo & 0xFF00) | (self.bg_low_byte as u16);
                 self.bg_shift_hi = (self.bg_shift_hi & 0xFF00) | (self.bg_high_byte as u16);
                 self.bg_attr_lo = (self.bg_attr_lo & 0xFF00) | (attr_lo as u16);
@@ -322,27 +329,27 @@ impl PPU {
                 // shift right by 8 whenever clipping is enabled.
                 if self.spr_x_counter[i] > 0 {
                     self.spr_x_counter[i] -= 1;
-                } else if !(spr_clip && px < 8) {
-                    let pix = ((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2
-                        | ((self.spr_shift_lo[i] & 0x80) != 0) as u8;
-                    if pix != 0 && !spr_visible {
-                        spr_pixel = pix;
-                        spr_palette = (self.spr_attr[i] & 0x03) + 4;
-                        spr_behind = (self.spr_attr[i] & 0x20) != 0;
-                        spr_visible = true;
-                        if i == 0 && self.sprite_zero_rendering {
-                            spr_is_zero = true;
+                } else {
+                    // First pixel of this sprite: bit 7 is the leftmost pixel.
+                    // Shift the register here, at the end of the rendered
+                    // pixel, so the counter reaching zero on the previous dot
+                    // does not advance the pattern before its first pixel.
+                    if !(spr_clip && px < 8) {
+                        let pix = ((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2
+                            | ((self.spr_shift_lo[i] & 0x80) != 0) as u8;
+                        if pix != 0 && !spr_visible {
+                            spr_pixel = pix;
+                            spr_palette = (self.spr_attr[i] & 0x03) + 4;
+                            spr_behind = (self.spr_attr[i] & 0x20) != 0;
+                            spr_visible = true;
+                            if i == 0 && self.sprite_zero_rendering {
+                                spr_is_zero = true;
+                            }
                         }
                     }
+                    self.spr_shift_lo[i] <<= 1;
+                    self.spr_shift_hi[i] <<= 1;
                 }
-            }
-        }
-
-        // Shift sprite shift registers when active
-        for i in 0..self.sprite_count_render as usize {
-            if self.spr_active[i] && self.spr_x_counter[i] == 0 {
-                self.spr_shift_lo[i] <<= 1;
-                self.spr_shift_hi[i] <<= 1;
             }
         }
 
