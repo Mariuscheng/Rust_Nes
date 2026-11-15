@@ -25,3 +25,6 @@ savestate.dat
 
 # F8 debug snapshots
 /dq_shot_*
+
+# Downloaded test ROM collections
+/nes-test-roms-master/
