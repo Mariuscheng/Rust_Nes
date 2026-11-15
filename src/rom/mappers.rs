@@ -69,6 +69,14 @@ impl MapperVariant {
         delegate!(self, has_chr_ram)
     }
 
+    pub fn battery_ram(&self) -> Option<&[u8]> {
+        delegate!(self, battery_ram)
+    }
+
+    pub fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        delegate!(self, battery_ram_mut)
+    }
+
     pub fn tick_mapper_irq(&mut self) -> bool {
         delegate!(self, tick_mapper_irq)
     }

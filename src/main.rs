@@ -73,6 +73,7 @@ fn run_headless(console: &mut NesConsole, max_frames: u64) {
         console.step_frame();
     }
     let total = start.elapsed();
+    console.save_battery();
     println!(
         "Ran {} frames in {:.2?} ({:.1} fps)",
         max_frames,
@@ -101,6 +102,7 @@ fn run_with_window(console: &mut NesConsole) {
     .unwrap_or_else(|e| panic!("{}", e));
 
     let audio_out = AudioOut::new(44100);
+    let mut last_battery_save = Instant::now();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         poll_input(console, &window);
@@ -130,7 +132,17 @@ fn run_with_window(console: &mut NesConsole) {
         if window.is_key_down(Key::F7) {
             console.load_state("savestate.dat");
         }
+
+        // Autosave battery-backed cartridge RAM so a crash or force-quit only
+        // loses the last 30 seconds.
+        if last_battery_save.elapsed() >= std::time::Duration::from_secs(30) {
+            console.save_battery();
+            last_battery_save = Instant::now();
+        }
     }
+
+    // Persist battery-backed cartridge RAM (if any) next to the ROM.
+    console.save_battery();
 }
 
 /// Opt into per-monitor DPI awareness so the window is blitted 1:1 instead of

@@ -1,8 +1,5 @@
 //! `Mapper` trait and the helpers shared by mapper implementations.
 
-use std::fs;
-use std::path::Path;
-
 // ── Helper functions ──
 
 pub(super) fn write_u8_vec(v: &mut Vec<u8>, val: u8) {
@@ -14,21 +11,6 @@ pub(super) fn read_u8_slice(data: &[u8], off: &mut usize) -> u8 {
     v
 }
 
-/// Attempt to load a battery-backed save file into the given buffer.
-/// Returns true if a save file existed and was loaded.
-pub fn load_battery_save<PRAM: AsMut<[u8]>>(path: &str, ram: &mut PRAM) -> bool {
-    let sav_path = Path::new(path).with_extension("sav");
-    if sav_path.exists()
-        && let Ok(data) = fs::read(&sav_path)
-    {
-        let ram = ram.as_mut();
-        let len = data.len().min(ram.len());
-        ram[..len].copy_from_slice(&data[..len]);
-        return true;
-    }
-    false
-}
-
 // ── Mapper trait ──
 
 pub trait Mapper {
@@ -38,6 +20,15 @@ pub trait Mapper {
     /// 是否使用 CHR-RAM（由 mapper 決定，PPU 持有實際 RAM）
     fn has_chr_ram(&self) -> bool {
         false
+    }
+    /// Battery-backed PRG RAM, if this cartridge has one. `Cartridge` uses it
+    /// to load `<rom>.sav` at boot and write it back on exit.
+    fn battery_ram(&self) -> Option<&[u8]> {
+        None
+    }
+    /// Mutable view used when loading the save file at boot.
+    fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        None
     }
     /// MMC3 IRQ tick: called by PPU on A12 rising edge (PPU cycle 256 end).
     /// Returns true if IRQ should be triggered.

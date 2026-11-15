@@ -10,6 +10,8 @@ pub struct Mapper5 {
     /// so it lives on the heap: otherwise every Cartridge/MainBus would carry
     /// 64 KiB inline just because this enum variant exists.
     prg_ram: Box<[u8; 65536]>,
+    /// This cartridge has battery-backed PRG RAM.
+    battery: bool,
     prg_mode: u8,
     chr_mode: u8,
     prg_banks: [u8; 5],
@@ -29,13 +31,14 @@ pub struct Mapper5 {
 
 impl Mapper5 {
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, battery: bool) -> Self {
-        let mut mapper = Self {
+        Self {
             prg_rom,
             chr_rom,
             prg_ram: vec![0u8; 65536]
                 .into_boxed_slice()
                 .try_into()
                 .expect("fixed 64 KiB PRG RAM"),
+            battery,
             prg_mode: 0,
             chr_mode: 0,
             prg_banks: [0; 5],
@@ -50,11 +53,7 @@ impl Mapper5 {
             pulse_b_divider: 0,
             pulse_a_enabled: false,
             pulse_b_enabled: false,
-        };
-        if battery {
-            super::super::mapper::load_battery_save("mmc5", &mut *mapper.prg_ram);
         }
-        mapper
     }
 
     fn prg_bank_count(&self) -> usize {
@@ -137,6 +136,18 @@ impl Mapper for Mapper5 {
 
     fn has_chr_ram(&self) -> bool {
         self.chr_rom.is_empty()
+    }
+
+    fn battery_ram(&self) -> Option<&[u8]> {
+        self.battery.then_some(&self.prg_ram[..])
+    }
+
+    fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        if self.battery {
+            Some(&mut self.prg_ram[..])
+        } else {
+            None
+        }
     }
 
     fn has_extended_audio(&self) -> bool {

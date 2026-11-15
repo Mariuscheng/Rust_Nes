@@ -11,6 +11,7 @@ use crate::joypad::{Button, Joypad};
 use crate::ppu::PPU;
 use crate::ram::Ram;
 use std::fs;
+use std::path::PathBuf;
 
 /// 純硬體 NES 主機封裝。
 /// 無平台 I/O 依賴；ROM 透過 Cartridge 黑盒注入。
@@ -19,6 +20,9 @@ pub struct NesConsole {
     bus: MainBus,
     /// PPU frame counter snapshot used to detect frame completion.
     last_ppu_frame: u64,
+    /// `<rom>.sav` for battery-backed cartridges, so the platform layer can
+    /// persist PRG RAM when the emulator exits.
+    battery_path: Option<PathBuf>,
 }
 
 impl NesConsole {
@@ -35,6 +39,7 @@ impl NesConsole {
         let joy2 = Joypad::new();
         let apu = apu::APU::new(crate::constants::DEFAULT_SAMPLE_RATE);
 
+        let battery_path = cart.battery_path().map(PathBuf::from);
         let mut bus = MainBus::new(cart.mapper, ram, ppu, joy1, joy2, apu);
 
         let mut cpu = CPU::new();
@@ -46,6 +51,20 @@ impl NesConsole {
             cpu,
             bus,
             last_ppu_frame,
+            battery_path,
+        }
+    }
+
+    /// Write battery-backed PRG RAM back to the cartridge's `<rom>.sav`.
+    ///
+    /// Called by the platform layer when emulation ends; cartridges without
+    /// battery RAM are a no-op.
+    pub fn save_battery(&self) {
+        let Some(path) = &self.battery_path else {
+            return;
+        };
+        if let Some(ram) = self.bus.mapper.battery_ram() {
+            let _ = fs::write(path, ram);
         }
     }
 

@@ -17,6 +17,8 @@ pub struct Mapper4 {
     irq_enable: bool,
     irq_reload: bool,
     prg_ram: [u8; 8192],
+    /// This cartridge has battery-backed PRG RAM.
+    battery: bool,
     /// Bit i set = 1 KiB CHR block i may have changed (see `take_chr_dirty_blocks`).
     /// Starts at 0xFF so the boot-time refresh copies all of CHR.
     chr_dirty: u8,
@@ -24,7 +26,7 @@ pub struct Mapper4 {
 
 impl Mapper4 {
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, mirroring: Mirroring, battery: bool) -> Self {
-        let mut mapper = Self {
+        Self {
             prg_rom,
             chr_rom,
             mirroring,
@@ -38,11 +40,8 @@ impl Mapper4 {
             irq_reload: false,
             prg_ram: [0; 8192],
             chr_dirty: 0xFF,
-        };
-        if battery {
-            super::super::mapper::load_battery_save("mmc3", &mut mapper.prg_ram);
+            battery,
         }
-        mapper
     }
 }
 
@@ -177,6 +176,18 @@ impl Mapper for Mapper4 {
 
     fn has_chr_ram(&self) -> bool {
         self.chr_rom.is_empty()
+    }
+
+    fn battery_ram(&self) -> Option<&[u8]> {
+        self.battery.then_some(&self.prg_ram[..])
+    }
+
+    fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        if self.battery {
+            Some(&mut self.prg_ram[..])
+        } else {
+            None
+        }
     }
 
     fn take_chr_dirty_blocks(&mut self) -> u8 {

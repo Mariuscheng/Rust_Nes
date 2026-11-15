@@ -13,11 +13,13 @@ pub struct Mapper1 {
     chr_bank1: u8,
     prg_bank: u8,
     prg_ram: [u8; 8192],
+    /// This cartridge has battery-backed PRG RAM.
+    battery: bool,
 }
 
 impl Mapper1 {
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, battery: bool) -> Self {
-        let mut mapper = Self {
+        Self {
             prg_rom,
             chr_rom,
             shift_reg: 0x10,
@@ -28,11 +30,8 @@ impl Mapper1 {
             chr_bank1: 0,
             prg_bank: 0,
             prg_ram: [0; 8192],
-        };
-        if battery {
-            super::super::mapper::load_battery_save("mmc1", &mut mapper.prg_ram);
+            battery,
         }
-        mapper
     }
 
     fn prg_bank_count(&self) -> usize {
@@ -153,6 +152,18 @@ impl Mapper for Mapper1 {
 
     fn has_chr_ram(&self) -> bool {
         self.chr_rom.is_empty()
+    }
+
+    fn battery_ram(&self) -> Option<&[u8]> {
+        self.battery.then_some(self.prg_ram.as_slice())
+    }
+
+    fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        if self.battery {
+            Some(self.prg_ram.as_mut_slice())
+        } else {
+            None
+        }
     }
 
     fn save_state(&self) -> Vec<u8> {

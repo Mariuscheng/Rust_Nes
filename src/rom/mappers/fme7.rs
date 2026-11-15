@@ -9,6 +9,8 @@ pub struct Fme7 {
     chr_rom: Vec<u8>,
     has_chr_ram: bool,
     prg_ram: [u8; 8192],
+    /// This cartridge has battery-backed PRG RAM.
+    battery: bool,
     // Bank select register
     command: u8,
     // Bank registers (8)
@@ -29,6 +31,7 @@ impl Fme7 {
             chr_rom,
             has_chr_ram,
             prg_ram: [0; 8192],
+            battery,
             command: 0,
             banks: [0; 8],
             irq_counter: 0,
@@ -37,9 +40,6 @@ impl Fme7 {
             irq_cycle_mode: false,
             chr_dirty: 0xFF,
         };
-        if battery {
-            super::super::mapper::load_battery_save("fme7", &mut mapper.prg_ram);
-        }
         // Default bank values
         mapper.banks[0] = 0;
         mapper.banks[1] = 1;
@@ -136,6 +136,18 @@ impl Mapper for Fme7 {
 
     fn has_chr_ram(&self) -> bool {
         self.has_chr_ram
+    }
+
+    fn battery_ram(&self) -> Option<&[u8]> {
+        self.battery.then_some(&self.prg_ram[..])
+    }
+
+    fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
+        if self.battery {
+            Some(&mut self.prg_ram[..])
+        } else {
+            None
+        }
     }
 
     fn take_chr_dirty_blocks(&mut self) -> u8 {
