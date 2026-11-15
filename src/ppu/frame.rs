@@ -42,7 +42,6 @@ impl PPU {
             if self.scanline == 241 && self.cycle == 1 {
                 self.status.vblank = true;
                 self.vblank_just_set = true;
-                self.vbl_set_dot = self.abs_dot();
                 if self.ctrl.nmi_output {
                     self.raise_nmi();
                 }
@@ -57,7 +56,6 @@ impl PPU {
                 self.status.sprite_overflow = false;
                 self.nmi_interrupt = false;
                 self.nmi_delay = 0;
-                self.vbl_clear_dot = self.abs_dot();
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
@@ -357,7 +355,6 @@ impl PPU {
         if spr_is_zero && bg_opaque && bg_enabled && spr_enabled && px < 255 {
             if !self.status.sprite_zero_hit {
                 self.split_hit = (self.scanline, self.cycle);
-                self.split_hit_read = (0, 0);
             }
             self.status.sprite_zero_hit = true;
         }

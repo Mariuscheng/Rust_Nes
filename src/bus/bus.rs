@@ -45,8 +45,6 @@ pub trait BusInterface {
     /// Advance the machine by one CPU cycle that performs no bus access
     /// (the internal cycles of implied instructions, interrupt sequences…).
     /// Returns true when the PPU's NMI line is asserted.
-    ///
-    /// TODO(phase 1c): also step the APU by one cycle here.
     fn tick(&mut self) -> bool;
 
     /// Advance the machine by one CPU cycle while distributing the PPU dots
@@ -70,27 +68,13 @@ pub trait BusInterface {
         0
     }
 
-    /// Current state of the PPU NMI line.
-    fn nmi_line(&self) -> bool {
-        false
-    }
-
     /// Consume a latched NMI edge, if any. The NMI input is edge-sensitive, so
     /// an edge seen by the CPU survives until the interrupt is serviced.
     fn take_nmi_edge(&mut self) -> bool {
         false
     }
 
-    /// NMI line state `delay` cycles before the most recent tick, i.e. the
-    /// state the 6502 samples on the polling cycle of the current instruction.
-    /// `delay == 0`: the penultimate-cycle sample used by almost every
-    /// instruction; `delay == 1`: taken branches, whose extra cycle comes
-    /// after the poll point.
-    fn nmi_line_before_tick(&self, _delay: u8) -> bool {
-        false
-    }
-
-    /// IRQ line state at the same sampling point.
+    /// IRQ line state at the sampling point.
     fn irq_asserted_before_tick(&self, _delay: u8) -> bool {
         false
     }
@@ -119,24 +103,19 @@ pub struct MainBus {
     /// interrupts on the penultimate cycle, so an edge seen during the last
     /// cycle of an instruction is only serviced after the next instruction.
     nmi_edge_seen_prev: bool,
-    /// D1 dot-offset plumbing: dots recorded by the PPU at the end of the last
-    /// two CPU cycles: [vbl_set, vbl_clear, nmi_enable, nmi_disable].
-    dot_history: [[u32; 4]; 2],
-    dot_history_idx: usize,
     /// NMI/IRQ line state sampled just before the most recent tick: this is
     /// the penultimate-cycle state the 6502 uses to decide about interrupts.
-    nmi_before_tick: bool,
     irq_before_tick: bool,
     /// Same, one cycle earlier: taken branches poll one cycle before their
     /// last cycle (see `CPU::poll_delay`).
-    nmi_before_prev_tick: bool,
     irq_before_prev_tick: bool,
     /// Pending $4014 OAM DMA page, serviced after the current instruction.
     dma_request: Option<u8>,
 }
 
 impl MainBus {
-    /// Diagnostic access to the PPU (used by the local split-timing test).
+    /// Diagnostic access to the PPU for the local harness (sprite/OAM checks).
+    #[cfg(all(test, feature = "local_harness"))]
     pub fn ppu_ref(&self) -> &PPU {
         &self.ppu
     }
@@ -163,11 +142,7 @@ impl MainBus {
             nmi_line_prev_sample: false,
             nmi_edge_seen: false,
             nmi_edge_seen_prev: false,
-            dot_history: [[0; 4]; 2],
-            dot_history_idx: 0,
-            nmi_before_tick: false,
             irq_before_tick: false,
-            nmi_before_prev_tick: false,
             irq_before_prev_tick: false,
             dma_request: None,
         }
@@ -304,9 +279,12 @@ impl MainBus {
     }
 
     // ══════════════════════════════════════════════
-    // WRAM snapshot (for external observers)
+    // PRG RAM snapshot (test-ROM observers)
     // ══════════════════════════════════════════════
 
+    /// Copy PRG RAM ($6000-$7FFF), where blargg-style test ROMs publish their
+    /// status byte and result text.
+    #[cfg(feature = "local_harness")]
     pub fn wram_snapshot(&self) -> [u8; 8192] {
         let mut snap = [0u8; 8192];
         for i in 0..8192u16 {
@@ -444,14 +422,7 @@ impl BusInterface for MainBus {
                     // seen in this very CPU cycle it has not been committed
                     // yet, so the read cancels it; an edge that was already
                     // visible at the previous boundary still fires.
-                    self.dot_history[self.dot_history_idx] = [
-            self.ppu.vbl_set_dot,
-            self.ppu.vbl_clear_dot,
-            self.ppu.nmi_enable_dot,
-            self.ppu.nmi_disable_dot,
-        ];
-        self.dot_history_idx ^= 1;
-        self.nmi_line = self.ppu.nmi_interrupt;
+                    self.nmi_line = self.ppu.nmi_interrupt;
                     if self.nmi_edge_seen && !self.nmi_edge_seen_prev {
                         self.nmi_edge_seen = false;
                     }
@@ -551,9 +522,7 @@ impl BusInterface for MainBus {
     }
 
     fn tick_with_dots(&mut self, dots: u16) -> bool {
-        self.nmi_before_prev_tick = self.nmi_before_tick;
         self.irq_before_prev_tick = self.irq_before_tick;
-        self.nmi_before_tick = self.nmi_line;
         self.nmi_edge_seen_prev = self.nmi_edge_seen;
         let irq = self.irq_asserted();
         self.irq_before_tick = irq;
@@ -565,13 +534,6 @@ impl BusInterface for MainBus {
         for _ in 0..a12_ticks {
             self.tick_mapper_irq();
         }
-        self.dot_history[self.dot_history_idx] = [
-            self.ppu.vbl_set_dot,
-            self.ppu.vbl_clear_dot,
-            self.ppu.nmi_enable_dot,
-            self.ppu.nmi_disable_dot,
-        ];
-        self.dot_history_idx ^= 1;
         self.nmi_line = self.ppu.nmi_interrupt;
         // The CPU's NMI input is edge-sensitive: latch the rising edge so a
         // later $2002 read cannot swallow an NMI that has already been seen.
@@ -609,20 +571,6 @@ impl BusInterface for MainBus {
             self.nmi_edge_seen_prev = false;
         }
         fired
-    }
-
-    fn nmi_line(&self) -> bool {
-        self.nmi_line
-    }
-
-    /// NMI line state `delay` cycles before the most recent tick.
-    /// `delay == 0` is the penultimate-cycle sample.
-    fn nmi_line_before_tick(&self, delay: u8) -> bool {
-        if delay == 0 {
-            self.nmi_before_tick
-        } else {
-            self.nmi_before_prev_tick
-        }
     }
 
     fn irq_asserted_before_tick(&self, delay: u8) -> bool {

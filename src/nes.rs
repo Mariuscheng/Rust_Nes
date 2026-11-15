@@ -14,6 +14,7 @@ use std::fs;
 
 /// Type of a callback invoked at the end of every rendered frame.
 /// Receives (frame_number, WRAM_snapshot).
+#[cfg(feature = "local_harness")]
 pub type FrameCallback = Box<dyn FnMut(u64, &[u8; 8192])>;
 
 /// 純硬體 NES 主機封裝。
@@ -23,16 +24,10 @@ pub struct NesConsole {
     bus: MainBus,
     /// PPU frame counter snapshot used to detect frame completion.
     last_ppu_frame: u64,
-    /// Optional callback invoked after each completed frame.
+    /// Optional callback invoked after each completed frame. Only the local
+    /// test harness (and its test-ROM observer) needs it.
+    #[cfg(feature = "local_harness")]
     frame_callback: Option<FrameCallback>,
-
-    // ── Per-frame cycle counters (for timing diagnostics) ──
-    pub frame_cycles: u64,
-    pub timing_instr_cycles: u64,
-    pub timing_nmi_cycles: u64,
-    pub timing_irq_cycles: u64,
-    pub timing_apu_stolen: u64,
-    pub timing_step_count: u64,
 }
 
 impl NesConsole {
@@ -59,18 +54,14 @@ impl NesConsole {
             cpu,
             bus,
             last_ppu_frame,
+            #[cfg(feature = "local_harness")]
             frame_callback: None,
-            frame_cycles: 0,
-            timing_instr_cycles: 0,
-            timing_nmi_cycles: 0,
-            timing_irq_cycles: 0,
-            timing_apu_stolen: 0,
-            timing_step_count: 0,
         };
         console
     }
 
     /// Register a callback invoked after every completed frame.
+    #[cfg(feature = "local_harness")]
     pub fn set_frame_callback(&mut self, cb: FrameCallback) {
         self.frame_callback = Some(cb);
     }
@@ -80,7 +71,8 @@ impl NesConsole {
         self.bus.joypad1_mut().set_button(button, pressed);
     }
 
-    /// Diagnostic access to the PPU (used by the local split-timing test).
+    /// Diagnostic access to the PPU for the local harness (sprite/OAM checks).
+    #[cfg(all(test, feature = "local_harness"))]
     pub fn ppu(&self) -> &PPU {
         self.bus.ppu_ref()
     }
@@ -115,15 +107,8 @@ impl NesConsole {
     /// dispatched at instruction boundaries; the PPU drives the NMI line as a
     /// level and the CPU edge-detects it.
     pub fn step(&mut self) {
-        let mut total_cpu_cycles: u16 = 0;
-        let mut instr_cycles: u16 = 0;
-        let mut nmi_cycles_acc: u16 = 0;
-        let mut irq_cycles_acc: u16 = 0;
-
         // ── 1. Execute CPU instruction ──
-        let ic = self.cpu.step(&mut self.bus);
-        total_cpu_cycles += ic;
-        instr_cycles += ic;
+        self.cpu.step(&mut self.bus);
 
         // ── 2. OAM DMA requested by $4014 runs right after the instruction.
         //       The CPU is halted for 513/514 cycles while PPU and APU keep
@@ -136,7 +121,7 @@ impl NesConsole {
         let delay = self.cpu.poll_delay;
         let irq_before_dma = self.bus.irq_asserted_before_tick(delay);
         if let Some(page) = self.bus.take_dma_request() {
-            total_cpu_cycles += self.bus.run_dma(page);
+            let _ = self.bus.run_dma(page);
         }
 
         // ── 3. Interrupt dispatch (NMI first: it is not maskable) ──
@@ -151,56 +136,21 @@ impl NesConsole {
         // the suppression window in ppu_vbl_nmi tests. BRK polls NMI itself
         // (op_brk) and must not be polled again here.
         if !self.cpu.nmi_polled && self.bus.take_nmi_edge() {
-            let nc = self.cpu.nmi(&mut self.bus);
-            total_cpu_cycles += nc;
-            nmi_cycles_acc += nc;
+            let _ = self.cpu.nmi(&mut self.bus);
         } else if irq_sample && self.cpu.irq_pending() {
             self.cpu.irq(&mut self.bus);
-            total_cpu_cycles += 7;
-            irq_cycles_acc += 7;
         }
 
-        // ── 3. Pay DMC DMA stalls raised during interrupt vectoring ──
-        let mut apu_stolen: u64 = 0;
+        // ── 4. Pay DMC DMA stalls raised during interrupt vectoring ──
         let stalled = self.bus.take_immediate_stolen_cycles();
-        if stalled > 0 {
-            for _ in 0..stalled {
-                self.bus.tick();
-            }
-            apu_stolen += stalled as u64;
-            total_cpu_cycles = total_cpu_cycles.saturating_add(stalled);
+        for _ in 0..stalled {
+            self.bus.tick();
         }
-
-        // ── 4. Accumulate timing counters ──
-        self.frame_cycles += total_cpu_cycles as u64;
-        self.timing_instr_cycles += instr_cycles as u64;
-        self.timing_nmi_cycles += nmi_cycles_acc as u64;
-        self.timing_irq_cycles += irq_cycles_acc as u64;
-        self.timing_apu_stolen += apu_stolen;
-        self.timing_step_count += 1;
-    }
-
-    /// Advance the machine by exactly `cycles` CPU cycles, never splitting an
-    /// instruction.
-    ///
-    /// This is the cycle-oriented entry point the timing tests want: instead of
-    /// "run one frame and see what happened", a test can say "run 29831 cycles
-    /// and check the frame IRQ flag". The engine still executes whole
-    /// instructions internally (that is the remaining piece of the
-    /// schedule-driven refactor), so the count is the closest instruction
-    /// boundary at or after the request.
-    pub fn step_cycles(&mut self, cycles: u64) -> u64 {
-        let mut done = 0u64;
-        while done < cycles {
-            self.step();
-            done += self.cpu.last_cycles as u64;
-        }
-        done
     }
 
     /// Step until a new frame is completed.
-    /// Returns `true` if a new frame was rendered, with callback invoked.
-    /// Returns `false` if no frame completed yet (should not happen in normal operation).
+    /// Returns `true` when a frame was rendered; the registered frame callback
+    /// (local harness only) runs before returning.
     pub fn step_frame(&mut self) -> bool {
         loop {
             self.step();
@@ -213,25 +163,19 @@ impl NesConsole {
         }
     }
 
-    /// Reset per-frame timing counters (call at end of each frame).
-    pub fn reset_frame_counters(&mut self) {
-        self.frame_cycles = 0;
-        self.timing_instr_cycles = 0;
-        self.timing_nmi_cycles = 0;
-        self.timing_irq_cycles = 0;
-        self.timing_apu_stolen = 0;
-        self.timing_step_count = 0;
-    }
-
     // ════════════════════════════════════════════════════
     // Private helpers
     // ════════════════════════════════════════════════════
 
     fn invoke_frame_callback(&mut self, frame_number: u64) {
+        #[cfg(feature = "local_harness")]
         if let Some(ref mut cb) = self.frame_callback {
             let wram = self.bus.wram_snapshot();
             cb(frame_number, &wram);
         }
+
+        #[cfg(not(feature = "local_harness"))]
+        let _ = frame_number;
     }
 
     // ════════════════════════════════════════════════════

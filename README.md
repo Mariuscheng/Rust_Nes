@@ -74,13 +74,12 @@ src/
 ├── rom/              # iNES 解析 + mappers/（9 種 mapper）
 ├── cartridge.rs      # Cartridge 黑盒封裝
 ├── ram/ram.rs        # 內部工作 RAM（2KB，含鏡像）
-├── joypad.rs         # NES 手柄（strobe latch + 序列讀出）
-└── debug.rs          # $6000 測試 ROM 協議觀察者
+└── joypad.rs         # NES 手柄（strobe latch + 序列讀出）
 ```
 
-測試用的 harness、golden 資料、ROM 分析腳本與設計文件**不包含在 repo 內**
-（`testing/`、`docs/` 都在 `.gitignore` 裡，只存在本機）。上面 `src/` 的清單就是
-本 repo 的全部程式碼。
+測試用的 harness、golden 資料與設計筆記**不包含在 repo 內**（`testing/`、`docs/`
+都在 `.gitignore` 裡，只存在本機）。上面 `src/` 的清單就是本 repo 的全部程式碼；
+`tools/` 另外放了一個檢查 decoder 是否覆蓋全部 256 個 opcode 的小工具。
 
 ## 🧪 執行測試
 
@@ -88,19 +87,39 @@ repo 內只有單元測試；ROM 回歸與畫面 golden 是本機的私有 harne
 `local_harness` 控制（預設關閉，所以 clone 下來不需要 `testing/` 也能 build 與測試）：
 
 ```bash
-# 單元測試（快，29 個，含 padding 白名單與 CHR-ROM 寫入保護回歸）
+# 單元測試（快，31 個，含 interrupt poll、padding 白名單與 CHR-ROM 寫入保護回歸）
 cargo test
 
 # 本機 ROM 回歸套件（需要 testing/ 與 .nes 檔）
 cargo test --release --features local_harness -- --ignored
 ```
 
-`testing/` 內的檔案（`rom_tests.rs`、`frame_tests.rs`、`golden_frames.txt`）透過
-`src/main.rs` 的 `#[path]` 掛進來，只在 `local_harness` feature 開啟時編譯。
+`testing/` 內的檔案（`rom_tests.rs`、`frame_tests.rs`、`rom_output.rs`、
+`golden_frames.txt`）透過 `src/main.rs` 的 `#[path]` 掛進來，只在 `local_harness`
+feature 開啟時編譯。同一個 feature 也會把 blargg 的 `$6000` 測試結果印到 stdout，
+方便手動跑單一 ROM：
 
-`all_instrs`、`official_only`、`instr_timing`、`4-irq_and_dma`、`5-branch_delays_irq`、
-`cpu_dummy_writes_oam` 通過；`cpu_interrupts`、`ppu_vbl_nmi`、`apu_test` 的已知差距
-見下面「已知限制」。畫面 hash 回歸的重新生成方式：
+```bash
+# bash
+HEADLESS_FRAMES=600 cargo run --release --features local_harness -- "test.nes"
+
+# PowerShell
+$env:HEADLESS_FRAMES=600; cargo run --release --features local_harness -- "test.nes"
+```
+
+目前本機 harness 全綠（46 個 harness 測試，0 失敗）：
+
+| 套件 | 結果 |
+|------|------|
+| `all_instrs`、`official_only`、`instr_timing`、`cpu_dummy_writes_oam` | 通過 |
+| `cpu_interrupts`（含 `2-nmi_and_brk`、`3-nmi_and_irq`） | 5/5 |
+| `ppu_vbl_nmi` | 10/10 |
+| `apu_test` | 8/8 |
+| `sprite_hit_tests_2005.10.05` | 11/11 |
+| `blargg_ppu_tests_2005.09.15b`（sprite_ram、power_up_palette、palette_ram、vbl_clear_time、vram_access） | 5/5 |
+| 畫面 golden（Mario、1942、1943） | 8 個 frame hash 全部一致 |
+
+畫面 hash 回歸的重新生成方式：
 
 ```bash
 # PowerShell
@@ -152,19 +171,10 @@ CHR 同步的取捨：mapper 寫入後立即同步到 PPU 的 8 KiB CHR 副本�
 
 ## ⚠️ 已知限制
 
-以下 blargg 測項目前**不會通過**，且不影響目前測試過的所有遊戲（Mario、Kirby's
-Adventure、1942、1943 的畫面 golden 全部一致）：
-
-| ROM | 結果 | 差距 |
-|-----|------|------|
-| `ppu_vbl_nmi` | 6/10（卡測項 7 `nmi_on_timing`） | `$2000` 開啟 NMI 的時機與硬體差 **1 個 PPU dot**：硬體要求 enable 距 VBL set 至少 25 dots，我們允許到 24 |
-| `cpu_interrupts` | 1/5（卡測項 2 `nmi_and_brk`） | 最後一列差 1 個 CPU cycle（NMI 早了） |
-| `3-nmi_and_irq` | 失敗 | NMI/IRQ 同拍時的優先權差 1–2 cycles |
-| `apu_test` | 6/8（卡測項 7，DMC timing） | — |
-
-成因與已排除的變體（PPU 側六個相位調整全部無效或破壞已通過的測項）記在本機的
-`docs/c0-phase-notes.md`；要繼續推進需要把 CPU 改成 cycle-stepped（每 cycle 一個
-state、存取有自己的 dot 位置），計畫在本機的 `docs/cycle-stepped-cpu.md`。
+- MMC5 僅部分實作（見上方 mapper 表）：`$5120-$512B` CHR bank、ExRAM 與 scanline IRQ
+  尚未完成。
+- 測試 ROM、ROM 回歸 harness 與畫面 golden 不隨 repo 發布，clone 下來只有單元測試。
+- 設計筆記與除錯工具放在本機的 `docs/`、`testing/`（都在 `.gitignore` 裡）。
 
 ## 📝 License
 

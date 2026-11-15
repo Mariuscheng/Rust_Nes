@@ -4,7 +4,9 @@ pub mod decoder;
 pub mod core;
 mod interrupt;
 mod registers;
+#[cfg(test)]
 mod schedule;
+#[cfg(test)]
 mod schedule_table;
 pub mod ops;
 pub mod stack_flags;
