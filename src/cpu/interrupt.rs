@@ -57,6 +57,14 @@ impl CPU {
 
     /// IRQ: maskable interrupt. The caller has already decided via
     /// [`CPU::irq_pending`] that the poll takes it.
+    ///
+    /// An NMI asserted during the first cycles of this sequence hijacks it: the
+    /// frame pushed here is kept (B cleared, I not yet set) but the NMI vector
+    /// is fetched instead. The NMI is sampled with the same timing BRK uses
+    /// (`op_brk`): the poll happens on the status-push cycle and sees the line
+    /// as of the previous cycle, so edges latched on c1-c4 win and an edge on
+    /// c5 or later is serviced after the following instruction
+    /// (cpu_interrupts 3-nmi_and_irq).
     pub fn irq(&mut self, bus: &mut dyn CpuBus) {
         // c1-c2: internal cycles (dummy reads of the interrupted PC).
         let _ = bus.read(self.pc);
@@ -67,14 +75,22 @@ impl CPU {
         self.stack_push_u16(bus, pc);
         self.stack_push_u8(bus, (self.p & 0xEF) | 0x20);
 
+        // c5: sample NMI before the vector fetch; a pending edge redirects it.
+        let nmi_taken = bus.take_nmi_edge();
+
         // I flag is set once the status byte is on the stack.
         self.p |= 0x04;
         self.poll_iflag = true;
         self.poll_delay = 0;
 
-        // c6-c7: fetch the IRQ vector.
-        let lo = bus.read(IRQ_VECTOR_LO) as u16;
-        let hi = bus.read(IRQ_VECTOR_HI) as u16;
+        // c6-c7: fetch the NMI vector when hijacked, else the IRQ vector.
+        let (lo_addr, hi_addr) = if nmi_taken {
+            (NMI_VECTOR_LO, NMI_VECTOR_HI)
+        } else {
+            (IRQ_VECTOR_LO, IRQ_VECTOR_HI)
+        };
+        let lo = bus.read(lo_addr) as u16;
+        let hi = bus.read(hi_addr) as u16;
         self.pc = (hi << 8) | lo;
 
         self.last_cycles = 7;
