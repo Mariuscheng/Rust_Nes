@@ -100,18 +100,10 @@ cargo test --release --features local_harness
 cargo test --release --features local_harness -- --ignored
 ```
 
-`testing/` 內的檔案（`*_tests.rs`、`rom_tests.rs`、`frame_tests.rs`、`rom_output.rs`、
-`golden_frames.txt`）透過 `src/` 各模組與 `src/main.rs` 的 `#[path]` 掛進來，只在
-`local_harness` feature 開啟時編譯；單元測試因此仍能存取模組私有欄位。同一個 feature
-也會把 blargg 的 `$6000` 測試結果印到 stdout，方便手動跑單一 ROM：
-
-```bash
-# bash
-HEADLESS_FRAMES=600 cargo run --release --features local_harness -- "test.nes"
-
-# PowerShell
-$env:HEADLESS_FRAMES=600; cargo run --release --features local_harness -- "test.nes"
-```
+`testing/` 內的檔案（`mod.rs`、`*_tests.rs`、`rom_tests.rs`、`frame_tests.rs`、
+`golden_frames.txt`）透過 `src/main.rs` 與 `src/` 各模組的 `#[path]` 掛進來，只在
+`local_harness` feature 開啟時編譯；單元測試因此仍能存取模組私有欄位。`src/main.rs`
+只有一行測試模組宣告，產品路徑完全不含測試程式碼。
 
 目前本機 harness 全綠（30 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
 

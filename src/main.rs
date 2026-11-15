@@ -23,22 +23,8 @@ mod rom;
 
 // ── Local-only test modules (live in `testing/`, which is not published) ──
 #[cfg(all(test, feature = "local_harness"))]
-#[path = "../testing/frame_tests.rs"]
-mod frame_tests;
-#[cfg(all(test, feature = "local_harness"))]
-#[path = "../testing/interrupt_poll_tests.rs"]
-mod interrupt_poll_tests;
-#[cfg(all(test, feature = "local_harness"))]
-#[path = "../testing/rom_tests.rs"]
-mod rom_tests;
-#[cfg(all(test, feature = "local_harness"))]
-#[path = "../testing/schedule_tests.rs"]
-mod schedule_tests;
-
-/// Test-ROM `$6000` observer, kept local with the rest of the harness.
-#[cfg(feature = "local_harness")]
-#[path = "../testing/rom_output.rs"]
-mod rom_output;
+#[path = "../testing/mod.rs"]
+mod tests;
 
 use audio::AudioOut;
 use cartridge::Cartridge;
@@ -73,10 +59,6 @@ fn main() {
 
     // ── 2. Build pure-hardware NES console ──
     let mut console = NesConsole::from_cartridge(cart);
-
-    // ── 3. Attach the test-ROM observer (local harness only) ──
-    #[cfg(feature = "local_harness")]
-    console.set_frame_callback(rom_output::RomOutput::new().make_callback());
 
     if headless {
         run_headless(&mut console, headless_frames.unwrap_or(3000));

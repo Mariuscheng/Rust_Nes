@@ -84,16 +84,20 @@ enum + `delegate!` 做靜態分派（避免 `Box<dyn Mapper>` 的虛擬呼叫與
 
 ### 3.1 模組與可見性
 
-- 一個檔案一個概念；`mod.rs` 只列出子模組與 `pub use`，不放邏輯。
+- 一個檔案一個概念。模組入口用 `foo.rs` + `foo/`（現代 Rust 配置），不用 `mod.rs`
+  ——`testing/mod.rs` 是本機測試的例外。
 - 預設私有；只有跨模組需要的東西才 `pub`。crate 內共用優先用 `pub(crate)` 或
   `pub(super)`。
-- `src/` **不含測試**。測試全部在 `testing/`，由原模組用
-  `#[cfg(all(test, feature = "local_harness"))] #[path = "..."] mod tests;` 掛回，
-  因此仍能存取私有欄位。
+- `src/` **不含測試**。測試全部在 `testing/`：`src/main.rs` 用
+  `#[cfg(all(test, feature = "local_harness"))] #[path = "../testing/mod.rs"] mod tests;`
+  掛入 frame / interrupt-poll / schedule 測試；`src/nes.rs` 另外用 `#[path]` 掛
+  `rom_tests.rs`，因為 ROM 回歸需要直接讀 `NesConsole` 的私有 bus 狀態（`$6000`
+  PRG RAM、PPU OAM）。這樣產品 API 不需要任何測試專用 accessor。各模組再用同樣的
+  `#[path]` 掛自己的 `*_tests.rs`，因此仍能存取私有欄位。
 - 平台 I/O 只允許出現在 `main.rs` 與 `audio.rs`；`nes.rs` 以下不碰視窗、鍵盤、
   音效裝置或檔案對話框。
-- 測試支援用的 accessor（例如 `NesConsole::ppu()`、`cpu_ram_byte`）用
-  `#[cfg(all(test, feature = "local_harness"))]` 標記，不進產品路徑。
+- 只給 harness 用的診斷資料（例如 PPU 的 `split_hit`、`row_x`）用
+  `#[cfg(all(test, feature = "local_harness"))]` 標記，發布版本完全不存在。
 
 ### 3.2 命名
 

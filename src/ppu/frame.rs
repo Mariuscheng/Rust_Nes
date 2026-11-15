@@ -56,6 +56,7 @@ impl PPU {
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
+            #[cfg(all(test, feature = "local_harness"))]
             if self.cycle == 1 && self.scanline < 40 {
                 self.row_x[self.scanline as usize] = self.x;
             }
@@ -353,6 +354,7 @@ impl PPU {
 
         // Sprite 0 hit
         if spr_is_zero && bg_opaque && bg_enabled && spr_enabled && px < 255 {
+            #[cfg(all(test, feature = "local_harness"))]
             if !self.status.sprite_zero_hit {
                 self.split_hit = (self.scanline, self.cycle);
             }

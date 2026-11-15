@@ -12,11 +12,6 @@ use crate::ppu::PPU;
 use crate::ram::Ram;
 use std::fs;
 
-/// Type of a callback invoked at the end of every rendered frame.
-/// Receives (frame_number, WRAM_snapshot).
-#[cfg(feature = "local_harness")]
-pub type FrameCallback = Box<dyn FnMut(u64, &[u8; 8192])>;
-
 /// 純硬體 NES 主機封裝。
 /// 無平台 I/O 依賴；ROM 透過 Cartridge 黑盒注入。
 pub struct NesConsole {
@@ -24,10 +19,6 @@ pub struct NesConsole {
     bus: MainBus,
     /// PPU frame counter snapshot used to detect frame completion.
     last_ppu_frame: u64,
-    /// Optional callback invoked after each completed frame. Only the local
-    /// test harness (and its test-ROM observer) needs it.
-    #[cfg(feature = "local_harness")]
-    frame_callback: Option<FrameCallback>,
 }
 
 impl NesConsole {
@@ -55,34 +46,12 @@ impl NesConsole {
             cpu,
             bus,
             last_ppu_frame,
-            #[cfg(feature = "local_harness")]
-            frame_callback: None,
         }
-    }
-
-    /// Register a callback invoked after every completed frame.
-    #[cfg(feature = "local_harness")]
-    pub fn set_frame_callback(&mut self, cb: FrameCallback) {
-        self.frame_callback = Some(cb);
     }
 
     /// Set a button state on joypad 1 (called by the platform input layer).
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         self.bus.joypad1_mut().set_button(button, pressed);
-    }
-
-    /// Diagnostic access to the PPU for the local harness (sprite/OAM checks).
-    #[cfg(all(test, feature = "local_harness"))]
-    pub fn ppu(&self) -> &PPU {
-        self.bus.ppu_ref()
-    }
-
-    /// Diagnostic read of CPU RAM (zero page included). The old blargg
-    /// screen-only PPU tests keep their result code in a zero-page variable,
-    /// so the local harness uses this to check pass/fail without OCR.
-    #[cfg(all(test, feature = "local_harness"))]
-    pub fn cpu_ram_byte(&self, addr: u16) -> u8 {
-        self.bus.ram_data()[(addr as usize) & 0x07FF]
     }
 
     /// Copy the PPU frame buffer (256×240) into `buf`.
@@ -157,25 +126,9 @@ impl NesConsole {
             let current_frame = self.bus.ppu_frame();
             if current_frame != self.last_ppu_frame {
                 self.last_ppu_frame = current_frame;
-                self.invoke_frame_callback(current_frame);
                 return true;
             }
         }
-    }
-
-    // ════════════════════════════════════════════════════
-    // Private helpers
-    // ════════════════════════════════════════════════════
-
-    fn invoke_frame_callback(&mut self, frame_number: u64) {
-        #[cfg(feature = "local_harness")]
-        if let Some(ref mut cb) = self.frame_callback {
-            let wram = self.bus.wram_snapshot();
-            cb(frame_number, &wram);
-        }
-
-        #[cfg(not(feature = "local_harness"))]
-        let _ = frame_number;
     }
 
     // ════════════════════════════════════════════════════
@@ -343,3 +296,10 @@ impl NesConsole {
         }
     }
 }
+
+/// Local-only ROM regression harness (`testing/`, not published). It lives
+/// under `nes` so it can read the private bus state (`$6000` PRG RAM, PPU)
+/// without adding test-only accessors to the production API.
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/rom_tests.rs"]
+mod rom_tests;

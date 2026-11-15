@@ -84,8 +84,10 @@ pub trait BusInterface {
 
 pub struct MainBus {
     ram: Ram,
-    mapper: MapperVariant,
-    ppu: PPU,
+    /// Mapper and PPU are crate-visible so the local harness (a child module of
+    /// `nes`) can inspect PRG RAM and OAM without test-only accessors here.
+    pub(crate) mapper: MapperVariant,
+    pub(crate) ppu: PPU,
     joypad1: Joypad,
     joypad2: Joypad,
     apu: APU,
@@ -116,12 +118,6 @@ pub struct MainBus {
 }
 
 impl MainBus {
-    /// Diagnostic access to the PPU for the local harness (sprite/OAM checks).
-    #[cfg(all(test, feature = "local_harness"))]
-    pub fn ppu_ref(&self) -> &PPU {
-        &self.ppu
-    }
-
     pub fn new(
         mapper: MapperVariant,
         ram: Ram,
@@ -278,21 +274,6 @@ impl MainBus {
     /// Return true if any IRQ source is currently active.
     pub fn irq_asserted(&self) -> bool {
         self.ppu.mapper_irq || self.apu.frame_interrupt || self.apu.dmc_interrupt
-    }
-
-    // ══════════════════════════════════════════════
-    // PRG RAM snapshot (test-ROM observers)
-    // ══════════════════════════════════════════════
-
-    /// Copy PRG RAM ($6000-$7FFF), where blargg-style test ROMs publish their
-    /// status byte and result text.
-    #[cfg(feature = "local_harness")]
-    pub fn wram_snapshot(&self) -> [u8; 8192] {
-        let mut snap = [0u8; 8192];
-        for i in 0..8192u16 {
-            snap[i as usize] = self.mapper.read_prg(0x6000 + i);
-        }
-        snap
     }
 
     // ══════════════════════════════════════════════

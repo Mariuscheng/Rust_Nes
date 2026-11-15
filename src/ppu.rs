@@ -69,11 +69,12 @@ pub struct PPU {
     /// True when the VBL flag was set on the most recently processed PPU dot.
     /// A $2002 read on that exact dot returns 0 and suppresses the flag.
     pub(super) vblank_just_set: bool,
-    /// Scanline/cycle of the most recent sprite-0 hit. The local harness uses
-    /// it to reason about mid-frame split timing (see rom_tests).
+    /// Scanline/cycle of the most recent sprite-0 hit, and the fine-X latched at
+    /// cycle 1 of the first 40 scanlines. Diagnostic data only the local
+    /// harness reads, so it is not part of a published build.
+    #[cfg(all(test, feature = "local_harness"))]
     pub split_hit: (u16, u16),
-    /// Fine-X latched at cycle 1 of each of the first 40 scanlines. Diagnostic
-    /// hook for the local harness.
+    #[cfg(all(test, feature = "local_harness"))]
     pub row_x: [u8; 40],
     pub(super) vram_increment: u8,
 
@@ -161,7 +162,9 @@ impl PPU {
             a12_rising_count: 0,
             prev_a12: false,
             vblank_just_set: false,
+            #[cfg(all(test, feature = "local_harness"))]
             split_hit: (0, 0),
+            #[cfg(all(test, feature = "local_harness"))]
             row_x: [0; 40],
             vram_increment: 1,
             frame_buffer: Box::new([0; 256 * 240]),
