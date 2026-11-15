@@ -13,11 +13,19 @@ impl PPU {
         for _ in 0..ppu_cycles {
             // The $2002 read-suppression window is a single PPU dot.
             self.vblank_just_set = false;
-            // Odd frame skip: on odd frames with rendering enabled,
-            // the pre-render line (scanline 261) skips cycle 0 (341 → 340 dots).
-            if self.odd_frame && (self.mask & 0x18) != 0 && self.scanline == 261 && self.cycle == 0 {
-                self.cycle = 1;
-                continue;
+            // Odd frame skip: on odd frames with rendering enabled, the
+            // pre-render line (261) is one dot shorter, so the next frame
+            // starts one real dot earlier. Drop dot 339 and let this same
+            // tick iteration process dot 340: consuming the iteration instead
+            // would leave the PPU a dot behind the CPU and the frame would
+            // not get shorter at all. 339 (not 340) is where the truncated
+            // line ends for the CPU-visible timing (10-even_odd_timing).
+            if self.odd_frame
+                && (self.mask & 0x18) != 0
+                && self.scanline == 261
+                && self.cycle == 339
+            {
+                self.cycle = 340;
             }
             // NMI line trails the VBL flag by a couple of dots (see the set
             // below). A $2002 read cancels the pending delay.
