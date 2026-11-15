@@ -293,15 +293,17 @@ impl PPU {
         let mut spr_visible = false;
         let mut spr_is_zero = false;
 
-        if spr_enabled && !(spr_clip && px < 8) {
+        if spr_enabled {
             for i in 0..self.sprite_count_render as usize {
                 if !self.spr_active[i] {
                     continue;
                 }
+                // The x counter runs even for clipped pixels; only the output
+                // is suppressed in the left 8 pixels, otherwise sprites would
+                // shift right by 8 whenever clipping is enabled.
                 if self.spr_x_counter[i] > 0 {
-                    // Still left of the sprite's first pixel.
                     self.spr_x_counter[i] -= 1;
-                } else {
+                } else if !(spr_clip && px < 8) {
                     let pix = ((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2
                         | ((self.spr_shift_lo[i] & 0x80) != 0) as u8;
                     if pix != 0 && !spr_visible {
