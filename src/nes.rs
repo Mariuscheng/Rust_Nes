@@ -85,6 +85,14 @@ impl NesConsole {
         self.bus.ppu_ref()
     }
 
+    /// Diagnostic read of CPU RAM (zero page included). The old blargg
+    /// screen-only PPU tests keep their result code in a zero-page variable,
+    /// so the local harness uses this to check pass/fail without OCR.
+    #[cfg(all(test, feature = "local_harness"))]
+    pub fn cpu_ram_byte(&self, addr: u16) -> u8 {
+        self.bus.ram_data()[(addr as usize) & 0x07FF]
+    }
+
     /// Copy the PPU frame buffer (256×240) into `buf`.
     pub fn read_frame_buffer(&self, buf: &mut [u32; 256 * 240]) {
         self.bus.read_frame_buffer(buf);
