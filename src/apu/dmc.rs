@@ -125,7 +125,10 @@ impl DmcChannel {
     pub fn clock_timer(&mut self) {
         let mut reloaded = false;
         if self.timer_value == 0 {
-            self.timer_value = self.timer_period;
+            // The reload cycle itself must consume one tick, otherwise the
+            // bit interval is period+1 CPU cycles (eight-dmc_rates measures
+            // the nominal period).
+            self.timer_value = self.timer_period.saturating_sub(1);
             reloaded = true;
             if !self.silence_flag {
                 if (self.sample_buffer & 1) != 0 {
