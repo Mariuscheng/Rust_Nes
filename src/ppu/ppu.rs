@@ -144,7 +144,13 @@ impl PPU {
             oam: [0; 256],
             oam_addr: 0,
             vram: [0; 4096],
-            palette: [0; 32],
+            palette: [
+                // Power-up palette RAM as measured by blargg on a real NES (the
+                // values power_up_palette checks). 32 bytes, $3F00-$3F1F.
+                0x09, 0x01, 0x00, 0x01, 0x00, 0x02, 0x02, 0x0D, 0x08, 0x10, 0x08, 0x24, 0x00, 0x00,
+                0x04, 0x2C, 0x09, 0x01, 0x34, 0x03, 0x00, 0x04, 0x00, 0x14, 0x08, 0x3A, 0x00, 0x02,
+                0x00, 0x20, 0x2C, 0x08,
+            ],
             chr_ram: [0; 8192],
             chr_is_ram: true,
             mirroring,
