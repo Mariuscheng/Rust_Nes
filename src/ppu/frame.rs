@@ -299,9 +299,9 @@ impl PPU {
                     continue;
                 }
                 if self.spr_x_counter[i] > 0 {
+                    // Still left of the sprite's first pixel.
                     self.spr_x_counter[i] -= 1;
-                }
-                if self.spr_x_counter[i] == 0 {
+                } else {
                     let pix = ((self.spr_shift_hi[i] & 0x80) != 0) as u8 * 2
                         | ((self.spr_shift_lo[i] & 0x80) != 0) as u8;
                     if pix != 0 && !spr_visible {
