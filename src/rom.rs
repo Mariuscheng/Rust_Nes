@@ -15,19 +15,14 @@ pub enum Mirroring {
     FourScreen,
 }
 
-/// Parsed ROM header information with both iNES 1.0 and NES 2.0 fields.
+/// Parsed iNES/NES 2.0 header fields the emulator needs.
 pub struct Rom {
     pub prg_rom: Vec<u8>,
     pub chr_rom: Vec<u8>,
     pub mapper_id: u16,
-    pub submapper_id: u8,
     pub screen_mirroring: Mirroring,
     pub has_chr_ram: bool,
-    pub prg_ram_size: usize,
-    pub chr_ram_size: usize,
     pub prg_ram_battery: bool,
-    pub chr_ram_battery: bool,
-    pub is_pal: bool,
 }
 
 impl Rom {
@@ -49,7 +44,6 @@ impl Rom {
         } else {
             ((flags7 & 0xF0) | (flags6 >> 4)) as u16
         };
-        let submapper_id: u8 = if is_nes20 { (raw[8] >> 4) & 0x0F } else { 0 };
 
         let four_screen = (flags6 & 0b1000) != 0;
         let vertical_mirroring = (flags6 & 0b0001) != 0;
@@ -88,43 +82,10 @@ impl Rom {
         let has_chr_ram = chr_size == 0;
         let skip_trainer = (flags6 & 0b0100) != 0;
 
-        let prg_ram_size: usize = if is_nes20 {
-            let shift = raw[10] & 0x0F;
-            if shift == 0 { 0 } else { 64 << shift as usize }
-        } else {
-            8192
-        };
-
-        let chr_ram_size: usize = if is_nes20 {
-            let shift = raw[11] & 0x0F;
-            if shift == 0 && !has_chr_ram {
-                0
-            } else if shift == 0 && has_chr_ram {
-                8192
-            } else {
-                64 << shift as usize
-            }
-        } else if has_chr_ram {
-            8192
-        } else {
-            0
-        };
-
         let prg_ram_battery: bool = if is_nes20 {
             (raw[10] & 0x80) != 0
         } else {
             (flags6 & 0x02) != 0
-        };
-        let chr_ram_battery: bool = if is_nes20 {
-            (raw[10] & 0x40) != 0
-        } else {
-            (flags6 & 0x02) != 0 && has_chr_ram
-        };
-
-        let is_pal: bool = if is_nes20 {
-            (raw[12] & 0x01) != 0
-        } else {
-            false
         };
 
         let prg_start = 16 + if skip_trainer { 512 } else { 0 };
@@ -157,37 +118,11 @@ impl Rom {
             prg_rom,
             chr_rom,
             mapper_id,
-            submapper_id,
             screen_mirroring,
             has_chr_ram,
-            prg_ram_size,
-            chr_ram_size,
             prg_ram_battery,
-            chr_ram_battery,
-            is_pal,
         };
 
-        println!(
-            "ROM loaded: mapper={}{}{}, prg_size={}K, chr_size={}K, mirroring={:?}, battery={}, prg_ram={}K, chr_ram={}K, pal={}",
-            rom_obj.mapper_id,
-            if rom_obj.submapper_id > 0 {
-                format!(".{}", rom_obj.submapper_id)
-            } else {
-                String::new()
-            },
-            if is_nes20 {
-                " (NES 2.0)"
-            } else {
-                " (iNES 1.0)"
-            },
-            rom_obj.prg_rom.len() / 1024,
-            rom_obj.chr_rom.len() / 1024,
-            rom_obj.screen_mirroring,
-            rom_obj.prg_ram_battery || rom_obj.chr_ram_battery,
-            rom_obj.prg_ram_size / 1024,
-            rom_obj.chr_ram_size / 1024,
-            rom_obj.is_pal,
-        );
         Ok(rom_obj)
     }
 
@@ -244,12 +179,5 @@ impl Rom {
 
 pub fn rom_entry<P: AsRef<Path>>(path: P) -> Result<Rom, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-    let rom = Rom::new(&bytes)?;
-    if rom.prg_ram_battery {
-        let sav_path = path.as_ref().with_extension("sav");
-        if sav_path.exists() {
-            println!("Battery save file found: {:?}", sav_path);
-        }
-    }
-    Ok(rom)
+    Rom::new(&bytes)
 }
