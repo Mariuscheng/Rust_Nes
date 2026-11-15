@@ -500,6 +500,13 @@ impl BusInterface for MainBus {
             0x2000..=0x3FFF => {
                 let reg = addr & 0x0007;
                 self.ppu.cpu_write(reg, data);
+                // A write can deassert the NMI line (disabling NMI). If the
+                // line rose earlier in this same CPU cycle and is already low
+                // again, the CPU never samples it: drop the latched edge.
+                self.nmi_line = self.ppu.nmi_interrupt;
+                if self.nmi_edge_seen && !self.nmi_edge_seen_prev && !self.nmi_line {
+                    self.nmi_edge_seen = false;
+                }
             }
             0x4014 => {
                 // OAM DMA: the transfer itself runs after this instruction
@@ -568,7 +575,10 @@ impl BusInterface for MainBus {
         self.nmi_line = self.ppu.nmi_interrupt;
         // The CPU's NMI input is edge-sensitive: latch the rising edge so a
         // later $2002 read cannot swallow an NMI that has already been seen.
-        if self.nmi_line && !self.nmi_line_prev_sample {
+        // The PPU reports every rising edge inside the three dots it just ran,
+        // so a line pulse shorter than one CPU cycle still latches.
+        let nmi_rise = self.ppu.take_nmi_rise();
+        if nmi_rise || (self.nmi_line && !self.nmi_line_prev_sample) {
             self.nmi_edge_seen = true;
         }
         self.nmi_line_prev_sample = self.nmi_line;

@@ -51,6 +51,13 @@ pub struct PPU {
     pub cycle: u16,
     pub frame: u64,
     pub nmi_interrupt: bool,
+    /// Sticky rising edge of the NMI line, sampled at every PPU dot. The 6502
+    /// edge-detects its NMI input, so a line pulse shorter than one CPU cycle
+    /// must still latch an edge (e.g. NMI enabled a dot before the pre-render
+    /// clear).
+    pub nmi_rise: bool,
+    /// NMI line level at the previous PPU dot boundary (edge sampling).
+    pub(super) nmi_line_sampled: bool,
     pub nmi_delay: u8,
     pub odd_frame: bool,
     pub mapper_irq: bool,
@@ -158,6 +165,8 @@ impl PPU {
             cycle: 0,
             frame: 0,
             nmi_interrupt: false,
+            nmi_rise: false,
+            nmi_line_sampled: false,
             nmi_delay: 0,
             odd_frame: false,
             mapper_irq: false,
@@ -223,6 +232,17 @@ impl PPU {
         }
     }
 
+    /// Assert the NMI line. The rising edge is latched by the per-dot sampler
+    /// in the PPU tick, so asserting an already-high line is not a new edge.
+    pub fn raise_nmi(&mut self) {
+        self.nmi_interrupt = true;
+    }
+
+    /// Consume the latched NMI rising edge, if any.
+    pub fn take_nmi_rise(&mut self) -> bool {
+        std::mem::take(&mut self.nmi_rise)
+    }
+
     // ── PPU Register I/O ──
 
     pub fn cpu_write(&mut self, reg_idx: u16, data: u8) {
@@ -243,7 +263,7 @@ impl PPU {
                     self.nmi_enable_dot = self.abs_dot();
                 }
                 if !prev_nmi_output && self.ctrl.nmi_output && self.status.vblank {
-                    self.nmi_interrupt = true;
+                    self.raise_nmi();
                 }
                 // Disabling NMI drops the NMI line so a later re-enable can
                 // raise a fresh edge (nmi_control test 9/10).

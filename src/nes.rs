@@ -140,8 +140,9 @@ impl NesConsole {
         // NMI is edge-triggered: the bus latches the rising edge on the PPU's
         // NMI line, and the poll consumes it. A $2002 read that clears the flag
         // before the edge is sampled therefore cancels the NMI, which is what
-        // the suppression window in ppu_vbl_nmi tests.
-        if self.bus.take_nmi_edge() {
+        // the suppression window in ppu_vbl_nmi tests. BRK polls NMI itself
+        // (op_brk) and must not be polled again here.
+        if !self.cpu.nmi_polled && self.bus.take_nmi_edge() {
             let nc = self.cpu.nmi(&mut self.bus);
             total_cpu_cycles += nc;
             nmi_cycles_acc += nc;

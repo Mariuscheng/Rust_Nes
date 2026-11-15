@@ -59,6 +59,10 @@ pub(crate) fn op_brk(
     // c6: NMI is sampled on the penultimate cycle. BRK selects the NMI vector
     // when that poll sees a pending NMI; the frame it pushed keeps B=1.
     let nmi_taken = bus.take_nmi_edge();
+    // BRK polls NMI only once, here. The end-of-instruction dispatch must not
+    // poll again: an edge that arrives after this point (cycles 5-7) is
+    // serviced after the instruction following BRK (cpu_interrupts 2).
+    cpu.nmi_polled = true;
 
     cpu.p |= 0x04;
     cpu.poll_iflag = true;

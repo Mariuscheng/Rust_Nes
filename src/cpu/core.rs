@@ -37,6 +37,12 @@ pub struct CPU {
     /// interrupt lines. 0 = last cycle (normal), 1 = taken branch without a
     /// page cross, whose extra cycle is inserted after the poll point.
     pub poll_delay: u8,
+    /// True when the current instruction performed its own NMI poll, so the
+    /// end-of-instruction dispatch must not poll again. BRK is the only such
+    /// instruction: it polls on cycle 5, before it commits to a vector, and an
+    /// edge that arrives on cycle 5 (after the poll) is serviced after the
+    /// *next* instruction, not after BRK finishes.
+    pub nmi_polled: bool,
     /// Total CPU cycles consumed by the last instruction (set by step()).
     pub last_cycles: u16,
     /// Diagnostic: opcodes that needed trailing padding (internal cycles not
@@ -65,6 +71,7 @@ impl CPU {
             p: 0x24,
             poll_iflag: true,
             poll_delay: 0,
+            nmi_polled: false,
             last_cycles: 0,
             padded: [false; 256],
         }
@@ -90,6 +97,7 @@ impl CPU {
         // alone because their write lands on the last cycle.
         self.poll_iflag = self.irq_disabled();
         self.poll_delay = 0;
+        self.nmi_polled = false;
 
         let mut extra_cycles: u8 = 0;
         match opcode.op {

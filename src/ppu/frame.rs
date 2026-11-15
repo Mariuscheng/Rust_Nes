@@ -24,7 +24,7 @@ impl PPU {
             if self.nmi_delay > 0 {
                 self.nmi_delay -= 1;
                 if self.nmi_delay == 0 && self.ctrl.nmi_output && self.status.vblank {
-                    self.nmi_interrupt = true;
+                    self.raise_nmi();
                 }
             }
 
@@ -36,7 +36,7 @@ impl PPU {
                 self.vblank_just_set = true;
                 self.vbl_set_dot = self.abs_dot();
                 if self.ctrl.nmi_output {
-                    self.nmi_interrupt = true;
+                    self.raise_nmi();
                 }
             }
 
@@ -87,6 +87,17 @@ impl PPU {
             {
                 self.v = (self.v & 0x041F) | (self.t & 0x7BE0);
             }
+
+            // Sample the NMI line at every dot boundary. The CPU's NMI input
+            // edge-detects the line, so a pulse shorter than one CPU cycle
+            // still counts (07-nmi_on_timing enables NMI just before the
+            // pre-render clear). Sampling after the dot's events means a write
+            // that raised the line is only seen once a dot has actually run
+            // with the line high.
+            if self.nmi_interrupt && !self.nmi_line_sampled {
+                self.nmi_rise = true;
+            }
+            self.nmi_line_sampled = self.nmi_interrupt;
 
             // Advance cycle/scanline
             self.cycle += 1;
