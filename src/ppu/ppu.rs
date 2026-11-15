@@ -328,7 +328,10 @@ impl PPU {
                     // This applies regardless of rendering state.
                     let result = self.read_buffer;
                     self.read_buffer = self.internal_read(addr);
-                    self.refresh_decay_bits(0xFF, self.read_buffer);
+                    // The bus carries the value handed to the CPU (the old
+                    // buffer), so that is what the decay register latches.
+                    // ppu_open_bus test 4 checks exactly this.
+                    self.refresh_decay_bits(0xFF, result);
                     result
             } else {
                 let palette_data = self.internal_read(addr);
