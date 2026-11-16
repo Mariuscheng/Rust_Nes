@@ -404,6 +404,8 @@ impl PPU {
                 _ => off,
             },
             Mirroring::FourScreen => a % 4096,
+            Mirroring::OneScreenLower => off,
+            Mirroring::OneScreenUpper => 0x0400 + off,
         };
         mapped % 2048
     }

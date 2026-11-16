@@ -79,6 +79,9 @@ PPU 是唯一以 dot 為單位的元件；CPU/APU 都以 3 dots 為一步。**�
 enum + `delegate!` 做靜態分派（避免 `Box<dyn Mapper>` 的虛擬呼叫與 lifetime）。
 `Mapper` trait 的預設實作就是「硬體上合理的 no-op」，所以新 mapper 只需覆寫有差的
 方法。CHR bank 切換透過 `take_chr_dirty_blocks()` 只重抄受影響的 1 KiB block。
+Nametable mirroring 也由 mapper 決定：MMC1/MMC3/VRC6 可在執行中改變，`MainBus`
+在 mapper 暫存器寫入後同步 `ppu.mirroring`（MMC1 control bits 0-1 也包含 one-screen
+lower/upper）。
 
 Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
 `battery_ram_mut()` 暴露自己的 PRG RAM（NROM/MMC1/MMC3/MMC5/FME-7），`Cartridge::from_file`
@@ -192,7 +195,7 @@ Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
 | 畫面回歸 | `testing/frame_tests.rs` | 對 `golden_frames.txt` 比 FNV-1a hash，抓渲染回歸。 |
 
 ```bash
-cargo test --release --features local_harness                    # 33 個單元測試
+cargo test --release --features local_harness                    # 36 個單元測試
 cargo test --release --features local_harness -- --ignored      # 45 個 ROM/golden
 ```
 

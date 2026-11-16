@@ -2,6 +2,7 @@
 
 use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
+use super::Mirroring;
 
 pub struct Mapper1 {
     prg_rom: Vec<u8>,
@@ -13,12 +14,14 @@ pub struct Mapper1 {
     chr_bank1: u8,
     prg_bank: u8,
     prg_ram: [u8; 8192],
+    /// Current nametable mirroring (control register bits 0-1).
+    mirroring: Mirroring,
     /// This cartridge has battery-backed PRG RAM.
     battery: bool,
 }
 
 impl Mapper1 {
-    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, battery: bool) -> Self {
+    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, mirroring: Mirroring, battery: bool) -> Self {
         Self {
             prg_rom,
             chr_rom,
@@ -30,7 +33,17 @@ impl Mapper1 {
             chr_bank1: 0,
             prg_bank: 0,
             prg_ram: [0; 8192],
+            mirroring,
             battery,
+        }
+    }
+
+    fn mirroring_from_control(control: u8) -> Mirroring {
+        match control & 0x03 {
+            0 => Mirroring::OneScreenLower,
+            1 => Mirroring::OneScreenUpper,
+            2 => Mirroring::VERTICAL,
+            _ => Mirroring::HORIZONTAL,
         }
     }
 
@@ -46,6 +59,7 @@ impl Mapper1 {
         match reg {
             0 => {
                 self.control = value;
+                self.mirroring = Self::mirroring_from_control(value);
             }
             1 => self.chr_bank0 = value,
             2 => self.chr_bank1 = value,
@@ -134,6 +148,7 @@ impl Mapper for Mapper1 {
                     self.shift_reg = 0x10;
                     self.shift_count = 0;
                     self.control = 0x0C;
+                    self.mirroring = Self::mirroring_from_control(0x0C);
                     return;
                 }
                 self.shift_reg = (self.shift_reg >> 1) | ((data & 0x01) << 4);
@@ -148,6 +163,10 @@ impl Mapper for Mapper1 {
             }
             _ => {}
         }
+    }
+
+    fn mirroring(&self) -> Option<Mirroring> {
+        Some(self.mirroring)
     }
 
     fn has_chr_ram(&self) -> bool {
@@ -186,6 +205,7 @@ impl Mapper for Mapper1 {
         self.shift_reg = read_u8_slice(data, &mut off);
         self.shift_count = read_u8_slice(data, &mut off);
         self.control = read_u8_slice(data, &mut off);
+        self.mirroring = Self::mirroring_from_control(self.control);
         self.chr_bank0 = read_u8_slice(data, &mut off);
         self.chr_bank1 = read_u8_slice(data, &mut off);
         self.prg_bank = read_u8_slice(data, &mut off);

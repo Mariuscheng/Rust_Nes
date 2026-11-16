@@ -1,5 +1,7 @@
 //! `Mapper` trait and the helpers shared by mapper implementations.
 
+use super::Mirroring;
+
 // ── Helper functions ──
 
 pub(super) fn write_u8_vec(v: &mut Vec<u8>, val: u8) {
@@ -20,6 +22,11 @@ pub trait Mapper {
     /// 是否使用 CHR-RAM（由 mapper 決定，PPU 持有實際 RAM）
     fn has_chr_ram(&self) -> bool {
         false
+    }
+    /// Current nametable mirroring for mappers that can change it at runtime
+    /// (MMC1, MMC3, VRC6). `None` means "keep the header's fixed mirroring".
+    fn mirroring(&self) -> Option<Mirroring> {
+        None
     }
     /// Battery-backed PRG RAM, if this cartridge has one. `Cartridge` uses it
     /// to load `<rom>.sav` at boot and write it back on exit.

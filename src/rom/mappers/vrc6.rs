@@ -162,6 +162,10 @@ impl Mapper for Vrc6 {
         self.has_chr_ram
     }
 
+    fn mirroring(&self) -> Option<Mirroring> {
+        Some(self.mirroring)
+    }
+
     fn take_chr_dirty_blocks(&mut self) -> u8 {
         std::mem::take(&mut self.chr_dirty)
     }

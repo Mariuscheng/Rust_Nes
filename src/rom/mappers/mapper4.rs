@@ -178,6 +178,10 @@ impl Mapper for Mapper4 {
         self.chr_rom.is_empty()
     }
 
+    fn mirroring(&self) -> Option<Mirroring> {
+        Some(self.mirroring)
+    }
+
     fn battery_ram(&self) -> Option<&[u8]> {
         self.battery.then_some(&self.prg_ram[..])
     }

@@ -13,6 +13,10 @@ pub enum Mirroring {
     VERTICAL,
     HORIZONTAL,
     FourScreen,
+    /// All four logical nametables map to the first physical page ($2000).
+    OneScreenLower,
+    /// All four logical nametables map to the second physical page ($2400).
+    OneScreenUpper,
 }
 
 /// Parsed iNES/NES 2.0 header fields the emulator needs.
@@ -136,6 +140,7 @@ impl Rom {
             1 => MapperVariant::Mapper1(mappers::Mapper1::new(
                 self.prg_rom,
                 self.chr_rom,
+                self.screen_mirroring,
                 self.prg_ram_battery,
             )),
             2 => MapperVariant::Mapper2(mappers::Mapper2::new(self.prg_rom, self.chr_rom)),

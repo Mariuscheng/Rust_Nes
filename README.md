@@ -94,7 +94,7 @@ feature `local_harness` 控制。因為 `testing/` 不發布，clone 下來的 r
 `testing/` 與該 feature：
 
 ```bash
-# 單元測試（33 個：interrupt poll、schedule table、battery save、bus/PPU/APU/joypad/mapper）
+# 單元測試（36 個：interrupt poll、schedule table、battery save、mirroring、bus/PPU/APU/joypad/mapper）
 cargo test --release --features local_harness
 
 # ROM 回歸 + 畫面 golden（45 個）
@@ -106,7 +106,7 @@ cargo test --release --features local_harness -- --ignored
 `local_harness` feature 開啟時編譯；單元測試因此仍能存取模組私有欄位。`src/main.rs`
 只有一行測試模組宣告，產品路徑完全不含測試程式碼。
 
-目前本機 harness 全綠（33 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
+目前本機 harness 全綠（36 個單元測試 + 45 個 ROM/golden 測試，0 失敗）：
 
 | 套件 | 結果 |
 |------|------|

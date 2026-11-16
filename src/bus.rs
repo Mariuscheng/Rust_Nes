@@ -126,6 +126,8 @@ impl MainBus {
         joypad2: Joypad,
         apu: APU,
     ) -> Self {
+        let mut ppu = ppu;
+        ppu.mirroring = mapper.mirroring().unwrap_or(ppu.mirroring);
         Self {
             ram,
             mapper,
@@ -143,6 +145,14 @@ impl MainBus {
             irq_before_tick: false,
             irq_before_prev_tick: false,
             dma_request: None,
+        }
+    }
+
+    /// Keep the PPU's nametable mapping in sync with mappers that can change
+    /// mirroring at runtime (MMC1/MMC3/VRC6 control writes).
+    fn sync_mirroring(&mut self) {
+        if let Some(mirroring) = self.mapper.mirroring() {
+            self.ppu.mirroring = mirroring;
         }
     }
 
@@ -294,6 +304,7 @@ impl MainBus {
 
     pub fn mapper_load_state(&mut self, data: &[u8]) {
         self.mapper.load_state(data);
+        self.sync_mirroring();
     }
 
     /// Save PPU state for external serialization.
@@ -495,6 +506,7 @@ impl BusInterface for MainBus {
                 self.mapper.write_prg(addr, data);
                 // CHR banks may have changed mid-frame.
                 self.refresh_chr();
+                self.sync_mirroring();
             }
             _ => {}
         }

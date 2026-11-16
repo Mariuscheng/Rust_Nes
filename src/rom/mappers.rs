@@ -73,6 +73,10 @@ impl MapperVariant {
         delegate!(self, battery_ram)
     }
 
+    pub fn mirroring(&self) -> Option<Mirroring> {
+        delegate!(self, mirroring)
+    }
+
     pub fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
         delegate!(self, battery_ram_mut)
     }
