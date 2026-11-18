@@ -37,7 +37,7 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: policy: no inline #[allow]
+      - name: "policy: no inline allow attribute"
         shell: pwsh
         run: |
           $hits = Get-ChildItem src -Recurse -Filter *.rs |
@@ -47,7 +47,7 @@ jobs:
             exit 1
           }
 
-      - name: policy: no TODO/FIXME markers
+      - name: "policy: no TODO/FIXME markers"
         shell: pwsh
         run: |
           $hits = Get-ChildItem src -Recurse -Filter *.rs |
