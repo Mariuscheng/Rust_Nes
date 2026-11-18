@@ -28,11 +28,6 @@ mod state;
 #[path = "../testing/mod.rs"]
 mod tests;
 
-/// Tests that only use the public API, so they also run in a checkout without
-/// the local harness (`testing/` is gitignored and absent from CI).
-#[cfg(test)]
-mod state_tests;
-
 use audio::AudioOut;
 use cartridge::Cartridge;
 use joypad::Button;

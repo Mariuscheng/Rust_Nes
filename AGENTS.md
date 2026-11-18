@@ -13,7 +13,7 @@
 ## 1. 完成的定義
 
 - 改動完成 = `pwsh -File scripts/verify.ps1` 回傳 0（零格式差異、零警告、零政策違規、測試通過）。
-- CI（GitHub Actions）只驗格式、lint、政策與編譯：`testing/` 是 gitignored，checkout 沒有 harness，腳本會自動跳過測試。**通過 CI 不等於完成，本機跑過才算。**
+- CI（GitHub Actions）只驗格式、lint、政策與編譯：`testing/`、`scripts/`、`tools/` 都不上傳，workflow 內嵌同樣的指令。**通過 CI 不等於完成，本機跑過才算。**
 - 動到 `cpu/`、`ppu/`、`apu/`、`bus.rs`、`rom/mappers/` 的可觀察行為 → 再加 `-Full`（跑 blargg 套件）。
 - 沒跑過不能說「完成」；跑不過不能以「與本次無關」結案，要回報。
 
@@ -85,9 +85,9 @@
 - 測試在 `testing/`，需 `--features local_harness`；ROM 套件標記 `--ignored`，要 `--release`。
 - `testing/rom_tests.rs` 由 `src/nes.rs` 掛載（為了讀 private bus state），不是 `testing/mod.rs` 的子模組，因此 clippy 的測試豁免蓋不到它的 helper。
 - 領域詞彙使用大寫縮寫（CPU/PPU/APU/OAM/CHR/PRG），已在 crate 級 `#[expect]` 說明理由。
-- 存檔格式由 `src/state.rs` 的 `Writer`/`Reader` 定義，第 1 byte 是版本（現為 `0x04`）。改欄位順序或長度必須同時 bump 版本、更新 `src/state_tests.rs::state_format_is_pinned` 的 (長度, 雜湊)，並保留舊版載入分支。
+- 存檔格式由 `src/state.rs` 的 `Writer`/`Reader` 定義，第 1 byte 是版本（現為 `0x04`）。改欄位順序或長度必須同時 bump 版本、更新 `testing/state_tests.rs::state_format_is_pinned` 的 (長度, 雜湊)，並保留舊版載入分支。
 - 存檔路徑（`nes.rs` / `apu.rs` / 9 個 mapper）全部經過 `src/state.rs` 的 `Writer`/`Reader`；mapper 的 payload 沒有獨立版本號，改它的欄位順序等於讓舊存檔失效，必須維持順序或 bump 外層版本。
-- `state_tests::every_mapper_round_trips_its_state` 覆蓋每個 mapper 的 save/load 對稱性；它會先斷言「poke 真的改了某個被序列化的欄位」，否則等於什麼都沒驗。
+- `testing/state_tests.rs::every_mapper_round_trips_its_state` 覆蓋每個 mapper 的 save/load 對稱性；它會先斷言「poke 真的改了某個被序列化的欄位」，否則等於什麼都沒驗。
 - 知識來源：NESdev wiki、blargg 測試 ROM（`nes-test-roms-master/`）、`docs/architecture.md`。
 
 ## 8. 維護這份文件

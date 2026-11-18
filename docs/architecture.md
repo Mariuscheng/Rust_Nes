@@ -179,12 +179,13 @@ NES 的 frame 不是 60 Hz：89342 PPU dots ÷ 3 = 29780.67 CPU cycles，在 1.7
 
 `0x04` 不是可有可無的欄位：存檔不含 `PPUMASK` 時，重開模擬器再按 F7 會得到整幀
 全黑——渲染從頭就是關的，要等遊戲自己重寫 `$2001` 才恢復。這個 bug 只有把狀態載入
-**全新開機**的主機才測得出來；載回原本那台會通過，因為暫存器還在。
+**全新開機**的主機才測得出來（`testing/state_tests.rs::loaded_state_resumes_identically_on_a_fresh_console`）；
+載回原本那台會通過，因為暫存器還在。
 
 改格式的四條規矩：
 
 1. 欄位順序或長度一改就 bump 版本，並保留舊版載入分支；舊存檔必須還能讀。
-2. 同步更新 `state_tests::state_format_is_pinned` 的 (長度, FNV-1a)。它是唯一擋住
+2. 同步更新 `testing/state_tests.rs::state_format_is_pinned` 的 (長度, FNV-1a)。它是唯一擋住
    「writer 與 reader 一起改歪」的檢查——往返測試對稱，但可能已經不是同一個格式。
 3. mapper payload 沒有自己的版本號，動它就等於動外層格式。
 4. 新欄位若只寫不讀，`save_load_save_is_byte_identical` 會立刻失敗。
@@ -203,9 +204,8 @@ NES 的 frame 不是 60 Hz：89342 PPU dots ÷ 3 = 29780.67 CPU cycles，在 1.7
   `rom_tests.rs`，因為 ROM 回歸需要直接讀 `NesConsole` 的私有 bus 狀態（`$6000`
   PRG RAM、PPU OAM）。這樣產品 API 不需要任何測試專用 accessor。各模組再用同樣的
   `#[path]` 掛自己的 `*_tests.rs`，因此仍能存取私有欄位。
-- 例外：**只用公開 API 的測試放 `src/state_tests.rs`**（`#[cfg(test)] mod state_tests;`）。
-  `testing/` 是 gitignored，GitHub checkout 沒有它；這幾個測試是 CI 唯一會執行的
-  行為驗證（存檔 round-trip、格式 pin、九個 mapper）。
+- `src/` 不含測試：存檔 round-trip、格式 pin、九個 mapper 的測試也都在 `testing/`。
+  CI 的 checkout 沒有這個目錄，所以 CI 只驗編譯與 lint，行為驗證只能在本機跑。
 - 平台 I/O 只允許出現在 `main.rs` 與 `audio.rs`；`nes.rs` 以下不碰視窗、鍵盤、
   音效裝置或檔案對話框。
 - 只給 harness 用的診斷資料（例如 PPU 的 `split_hit`、`row_x`）用
@@ -294,18 +294,18 @@ NES 的 frame 不是 60 Hz：89342 PPU dots ÷ 3 = 29780.67 CPU cycles，在 1.7
 | 層級 | 位置 | 說明 |
 |------|------|------|
 | 單元測試 | `testing/<module>_tests.rs` | 測私有邏輯：decoder、mapper、APU tick、中斷 poll、schedule table。 |
-| 公開 API | `src/state_tests.rs` | 存檔 round-trip、格式 pin、九個 mapper 的對稱性。不依賴 harness，CI 會跑。 |
+| 存檔 | `testing/state_tests.rs` | round-trip、格式 pin、九個 mapper 的對稱性。 |
 | ROM 回歸 | `testing/rom_tests.rs` | 每個 blargg 子測項一個 `#[test]`，assert pass/status；路徑一律指向 `nes-test-roms-master/`，**缺檔視為失敗**（早期的「找不到就跳過」讓 15 個測試空跑了好幾個月）。 |
 | 畫面回歸 | `testing/frame_tests.rs` | 對 `golden_frames.txt` 比 FNV-1a hash，抓渲染回歸。 |
 
 ```bash
-cargo test --release --features local_harness                    # 55 個測試（51 harness + 4 公開 API）
+cargo test --release --features local_harness                    # 55 個測試（全部在本機 harness）
 cargo test --release --features local_harness -- --ignored      # 63 個測試，實際開機 134 片 ROM
 ```
 
 修 bug 的順序永遠是：**先讓測試失敗 → 最小修正 → 全 suite + golden 綠**。`testing/`
-是本機私有（不發布），所以 clone 下來的 repo `cargo test` 只剩 `src/state_tests.rs`
-那 4 個測試——它們同時也是 CI 的全部行為驗證。
+是本機私有（不發布），所以 clone 下來的 repo `cargo test` 會是 0 tests——CI 只驗
+編譯與 lint，不含任何行為測試。
 
 ## 6. 名詞與時間單位
 

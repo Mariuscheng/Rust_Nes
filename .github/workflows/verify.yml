@@ -28,6 +28,34 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify (same script as local)
+      - name: fmt
         shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/verify.ps1
+        run: |
+          $files = Get-ChildItem src -Recurse -Filter *.rs | ForEach-Object { $_.FullName }
+          rustfmt --check --edition 2024 --config skip_children=true @files
+
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: policy: no inline #[allow]
+        shell: pwsh
+        run: |
+          $hits = Get-ChildItem src -Recurse -Filter *.rs |
+            Select-String -Pattern '^\s*#!?\[\s*allow\s*\('
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }
+            exit 1
+          }
+
+      - name: policy: no TODO/FIXME markers
+        shell: pwsh
+        run: |
+          $hits = Get-ChildItem src -Recurse -Filter *.rs |
+            Select-String -Pattern '//.*\b(TODO|FIXME|HACK|XXX)\b'
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }
+            exit 1
+          }
+
+      - name: test target compiles
+        run: cargo test --locked

@@ -89,16 +89,15 @@ src/
 
 本機測試 harness 與設計筆記**不包含在 repo 內**（`testing/` 在 `.gitignore` 裡，只存在
 本機）；`docs/` 只發布 [`docs/architecture.md`](docs/architecture.md) 這份架構與寫作
-慣例指南，其餘研究筆記留在本機。上面 `src/` 的清單就是本 repo 的全部程式碼；
-`tools/` 另外放了一個檢查 decoder 是否覆蓋全部 256 個 opcode 的小工具。
+慣例指南，其餘研究筆記留在本機。上面 `src/` 的清單就是本 repo 的全部程式碼。本機的
+`scripts/`（`verify.ps1` 驗證腳本）與 `tools/`（opcode 覆蓋檢查）同樣不上傳。
 
 ## 🧪 執行測試
 
-單元測試、blargg ROM 回歸與畫面 golden 都放在本機的 `testing/`，由 Cargo feature
-`local_harness` 控制；clone 下來的 repo 沒有它，`cargo test` 只會跑
-`src/state_tests.rs` 的 4 個公開 API 測試（存檔 round-trip、格式 pin、九個 mapper
-——它們不需要 harness，也是 CI 唯一的行為驗證）。要跑完整 suite 需要本機的 `testing/`
-與該 feature：
+所有測試（單元測試、存檔 round-trip、blargg ROM 回歸、畫面 golden）都放在本機的
+`testing/`，由 Cargo feature `local_harness` 控制。因為 `testing/` 不發布，clone 下來的
+repo 直接跑 `cargo test` 會是 0 tests（這是刻意設計：`src/` 不含測試程式碼，CI 只驗
+編譯與 lint）。要跑測試需要本機的 `testing/` 與該 feature：
 
 ```bash
 # 55 個測試（51 harness：interrupt poll、schedule table、battery save、reset、mirroring、
@@ -202,7 +201,7 @@ CHR 同步的取捨：mapper 寫入後立即同步到 PPU 的 8 KiB CHR 副本�
 - Reset 已實作（`NesConsole::reset`）：CPU 7-cycle 重置序列、PPU/APU 暫存器歸零、APU 重播最後一次 `$4017` 值。mapper 端只有 MMC1（shift register / control）與 MMC3（bank/IRQ 暫存器）會重設，其餘 mapper 假設遊戲在 reset handler 內自己重寫 bank；重置也不清 VRAM/OAM/調色盤/RAM。
 - 沒有 vsync：minifb 0.24 不提供，畫面由 DWM 以螢幕更新率合成。NES 是 60.0988 Hz、60 Hz 螢幕是 60.000 Hz，所以每約 10 秒會有一格被重複顯示（所有以音訊為時鐘、未做動態取樣率補償的模擬器都一樣）；拖動視窗時主迴圈被 Windows 的 modal message loop 擋住，音訊會短暫斷掉，放開後節奏會自動補回。
 - 只支援 NTSC；`pal_apu_tests`、`nes15-PAL` 這類 PAL 時序的 ROM 不適用。
-- 測試絕大多數放在本機 `testing/`（不發布）；只有 `src/state_tests.rs` 的 4 個公開 API 測試跟著 repo 發布並在 CI 執行，所以 clone 上 `cargo test` 不是 0 tests。
+- 測試程式碼全部放在本機 `testing/`（不發布），clone 下來 `cargo test` 會是 0 tests。
 - `docs/` 只發布架構指南，其餘設計筆記與除錯腳本留在本機。
 
 ## 📝 License

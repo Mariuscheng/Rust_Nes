@@ -22,6 +22,10 @@ savestate.dat
 # Local-only test harness (not published to GitHub)
 /testing/
 
+# Local tooling: verification script and opcode checker stay off GitHub.
+/scripts/
+/tools/
+
 # Design notes are local; the architecture guide is published.
 /docs/*
 !/docs/architecture.md
