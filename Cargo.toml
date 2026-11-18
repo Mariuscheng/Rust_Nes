@@ -2,6 +2,8 @@
 name = "rust_nes_emulator"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.100.0"
+license = "MIT"
 
 [dependencies]
 minifb = "0.24"
@@ -13,3 +15,19 @@ rodio = "0.17"
 # off by default: a fresh clone builds — and `cargo test` runs nothing — without it.
 local_harness = []
 
+# 品質閘門的唯一真實來源：AGENTS.md 只解釋意圖與例外程序，不重複這裡的規則。
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+large_stack_arrays = "deny"
+ignore_without_reason = "deny"
+unchecked_time_subtraction = "deny"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

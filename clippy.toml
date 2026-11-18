@@ -1,0 +1,5 @@
+# 測試碼不受 unwrap/expect/panic 限制：斷言失敗就是失敗，
+# 用 Result 手工傳播只會讓測試更難讀（見 AGENTS.md §2）。
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
