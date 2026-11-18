@@ -65,6 +65,10 @@ impl MapperVariant {
         delegate!(self, write_prg, addr, data)
     }
 
+    pub fn reset(&mut self) {
+        delegate!(self, reset)
+    }
+
     pub fn has_chr_ram(&self) -> bool {
         delegate!(self, has_chr_ram)
     }
@@ -85,6 +89,19 @@ impl MapperVariant {
         delegate!(self, tick_mapper_irq)
     }
 
+    pub fn irq_line(&self) -> bool {
+        delegate!(self, irq_line)
+    }
+
+    /// MMC3 IRQ state for the local harness: (enabled, counter, latch, pending).
+    #[cfg(all(test, feature = "local_harness"))]
+    pub fn irq_debug(&self) -> Option<(bool, u8, u8, bool)> {
+        match self {
+            MapperVariant::Mapper4(m) => Some(m.irq_debug()),
+            _ => None,
+        }
+    }
+
     pub fn take_chr_dirty_blocks(&mut self) -> u8 {
         delegate!(self, take_chr_dirty_blocks)
     }
@@ -94,7 +111,7 @@ impl MapperVariant {
     }
 
     pub fn load_state(&mut self, data: &[u8]) {
-        delegate!(self, load_state, data)
+        let _ = delegate!(self, load_state, data);
     }
 
     pub fn write_audio_register(&mut self, addr: u16, data: u8) {

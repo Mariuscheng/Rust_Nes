@@ -1,9 +1,9 @@
 //! Mapper 24/26 — VRC6 (Konami), covering both VRC6a and VRC6b.
 // Supports both VRC6a (mapper 24) and VRC6b (mapper 26).
 
-use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
 use super::Mirroring;
+use crate::state::{Reader, Writer};
 
 pub struct Vrc6 {
     prg_rom: Vec<u8>,
@@ -233,32 +233,27 @@ impl Mapper for Vrc6 {
     }
 
     fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        write_u8_vec(&mut v, self.prg_bank0);
-        write_u8_vec(&mut v, self.prg_mode);
-        v.extend_from_slice(&self.chr_banks);
-        write_u8_vec(&mut v, self.irq_latch);
-        write_u8_vec(&mut v, self.irq_counter);
-        v.push(if self.irq_enable { 1 } else { 0 });
-        v.push(if self.irq_mode { 1 } else { 0 });
-        v
+        let mut out = Writer::new();
+        out.u8(self.prg_bank0);
+        out.u8(self.prg_mode);
+        out.bytes(&self.chr_banks);
+        out.u8(self.irq_latch);
+        out.u8(self.irq_counter);
+        out.bool(self.irq_enable);
+        out.bool(self.irq_mode);
+        out.finish()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.len() < 13 {
-            return;
-        }
-        let mut off = 0;
-        self.prg_bank0 = read_u8_slice(data, &mut off);
-        self.prg_mode = read_u8_slice(data, &mut off);
-        self.chr_banks.copy_from_slice(&data[off..off + 8]);
-        off += 8;
-        self.irq_latch = read_u8_slice(data, &mut off);
-        self.irq_counter = read_u8_slice(data, &mut off);
-        self.irq_enable = data[off] != 0;
-        off += 1;
-        self.irq_mode = data[off] != 0;
-        // Restored banks may differ from what the PPU holds; force a full copy.
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        self.prg_bank0 = reader.u8()?;
+        self.prg_mode = reader.u8()?;
+        self.chr_banks = reader.array()?;
+        self.irq_latch = reader.u8()?;
+        self.irq_counter = reader.u8()?;
+        self.irq_enable = reader.bool()?;
+        self.irq_mode = reader.bool()?;
         self.chr_dirty = 0xFF;
+        Some(())
     }
 }

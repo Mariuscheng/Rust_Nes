@@ -16,6 +16,7 @@ use self::dmc::DmcChannel;
 use self::noise::NoiseChannel;
 use self::pulse::PulseChannel;
 use self::triangle::TriangleChannel;
+use crate::state::{Reader, Writer};
 
 /// Frame counter event thresholds, counted in CPU cycles after a `$4017` write.
 ///
@@ -31,6 +32,14 @@ use self::triangle::TriangleChannel;
 /// place to tune frame-counter timing.
 const FRAME_EVENTS: [i64; 9] = [7457, 14913, 22371, 29829, 14913, 29829, 29830, 29830, 37281];
 
+/// CPU cycles between the power-up `$4017` write and the first instruction.
+///
+/// After power-up the APU behaves as if `$00` were written to `$4017` 9-12
+/// CPU clocks before the first instruction (blargg `09.reset_timing`; the
+/// observed delay is usually 9). `APU::power_on` pre-ages the frame counter by
+/// this much so the fourth step lands in the window that test checks.
+const POWER_ON_FRAME_AGE: i64 = 9;
+
 /// NES APU（Audio Processing Unit）
 ///
 /// 整合五個音頻通道與 frame counter，
@@ -43,6 +52,9 @@ pub struct APU {
     dmc: DmcChannel,
     frame_mode: u8,
     frame_irq_inhibit: bool,
+    /// Last value written to `$4017`. Hardware re-applies it when the console
+    /// is reset (see [`APU::rearm_frame_counter`]); `$00` after power-up.
+    last_4017_write: u8,
     /// Frame counter IRQ 是否已觸發（讀取 $4015 時清除）
     pub frame_interrupt: bool,
     /// Remaining CPU cycles of the frame-IRQ assertion window. The flag is set
@@ -64,6 +76,15 @@ pub struct APU {
     frame_step_offset: i64,
     /// True until the first frame-counter reset after a $4017 write.
     frame_first_sequence: bool,
+    /// Length counters as of the start of the current half-frame clock, so a
+    /// `$4015` read on the clock cycle still sees the pre-clock state
+    /// (blargg `05.len_timing_mode0`). Order: pulse1, pulse2, triangle, noise.
+    length_before_clock: [u8; 4],
+    /// True from the half-frame clock of the current APU cycle until the next
+    /// cycle starts. A `$4003`/`$4007`/`$400B`/`$400F` write in this cycle is
+    /// ignored when the length counter was nonzero before the clock
+    /// (blargg `11.len_reload_timing`).
+    length_clocked: bool,
     sample_accumulator: u64,
     cycles_per_sample_numer: u64,
     audio_buffer: Vec<f32>,
@@ -84,6 +105,7 @@ impl APU {
             dmc: DmcChannel::new(),
             frame_mode: 0,
             frame_irq_inhibit: true,
+            last_4017_write: 0,
             frame_interrupt: false,
             frame_irq_arm: 0,
             frame_irq_countdown: 0,
@@ -91,6 +113,8 @@ impl APU {
             frame_step: 0,
             frame_step_offset: 0,
             frame_first_sequence: false,
+            length_before_clock: [0; 4],
+            length_clocked: false,
             sample_accumulator: 0,
             cycles_per_sample_numer: sample_rate as u64,
             audio_buffer: Vec::with_capacity(sample_rate as usize / 60 + 32),
@@ -112,18 +136,48 @@ impl APU {
     /// bus 讀取後以 `fill_sample()` 回填。
     pub fn write_register(&mut self, addr: u16, data: u8) -> Option<u16> {
         match addr {
-            0x4000..=0x4003 => {
+            0x4000..=0x4002 => {
                 self.pulse1.write_reg((addr - 0x4000) as u8, data);
             }
-            0x4004..=0x4007 => {
+            0x4003 => {
+                let old = self.pulse1.length_counter;
+                let blocked = self.length_reload_blocked(0);
+                self.pulse1.write_reg(3, data);
+                if blocked {
+                    self.pulse1.length_counter = old;
+                }
+            }
+            0x4004..=0x4006 => {
                 self.pulse2.write_reg((addr - 0x4004) as u8, data);
+            }
+            0x4007 => {
+                let old = self.pulse2.length_counter;
+                let blocked = self.length_reload_blocked(1);
+                self.pulse2.write_reg(3, data);
+                if blocked {
+                    self.pulse2.length_counter = old;
+                }
             }
             0x4008 => self.triangle.write_reg(0, data),
             0x400A => self.triangle.write_reg(2, data),
-            0x400B => self.triangle.write_reg(3, data),
+            0x400B => {
+                let old = self.triangle.length_counter;
+                let blocked = self.length_reload_blocked(2);
+                self.triangle.write_reg(3, data);
+                if blocked {
+                    self.triangle.length_counter = old;
+                }
+            }
             0x400C => self.noise.write_reg(0, data),
             0x400E => self.noise.write_reg(2, data),
-            0x400F => self.noise.write_reg(3, data),
+            0x400F => {
+                let old = self.noise.length_counter;
+                let blocked = self.length_reload_blocked(3);
+                self.noise.write_reg(3, data);
+                if blocked {
+                    self.noise.length_counter = old;
+                }
+            }
             0x4010..=0x4013 => {
                 self.dmc.write_reg((addr - 0x4010) as u8, data);
                 if addr == 0x4010 && !self.dmc.irq_enabled {
@@ -176,48 +230,112 @@ impl APU {
                 }
             }
             0x4017 => {
-                self.frame_mode = (data >> 7) & 1;
-                self.frame_irq_inhibit = (data & 0x40) != 0;
-                if self.frame_irq_inhibit {
-                    self.frame_interrupt = false;
-                    self.frame_irq_arm = 0;
-                    self.frame_irq_countdown = 0;
-                }
-                // 依照寫入當下的 CPU cycle 奇偶決定 jitter 模式。
-                // Even cycle: offset=0，下一個 tick 就開始計數。
-                // Odd cycle:  offset=-2，寫入落在 2-cycle 網格之間，整個第一段
-                //             序列延後 2 個 tick（跳過一個 clock）。
-                self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 {
-                    0
-                } else {
-                    -2
-                };
-                self.frame_step = self.frame_step_offset;
-                self.frame_first_sequence = true;
-                // Mode 0 re-arms the frame IRQ: first flag 29831 clocks after
-                // the write on an even cycle, one clock later on an odd cycle
-                // (the write lands between two APU clocks).
-                self.frame_irq_arm = 0;
-                self.frame_irq_countdown = if self.frame_mode == 0 && !self.frame_irq_inhibit {
-                    29831
-                        + if (self.total_cpu_cycles & 1) == 0 {
-                            0
-                        } else {
-                            1
-                        }
-                } else {
-                    0
-                };
-                // mode 1 ($80)：寫入後立刻觸發一次 quarter + half，
-                // 發生在 sequencer 重置之後，不計入 frame_step。
-                if self.frame_mode == 1 {
-                    self.clock_quarter_frame();
-                    self.clock_half_frame();
-                }
+                self.last_4017_write = data;
+                self.write_frame_counter(data);
             }
             _ => {}
         }
         None
+    }
+
+    /// Apply a write to the frame counter register (`$4017`).
+    fn write_frame_counter(&mut self, data: u8) {
+        self.frame_mode = (data >> 7) & 1;
+        self.frame_irq_inhibit = (data & 0x40) != 0;
+        if self.frame_irq_inhibit {
+            self.frame_interrupt = false;
+            self.frame_irq_arm = 0;
+            self.frame_irq_countdown = 0;
+        }
+        // 依照寫入當下的 CPU cycle 奇偶決定 jitter 模式。
+        // Even cycle: offset=0，下一個 tick 就開始計數。
+        // Odd cycle:  offset=-2，寫入落在 2-cycle 網格之間，整個第一段
+        //             序列延後 2 個 tick（跳過一個 clock）。
+        self.frame_step_offset = if (self.total_cpu_cycles & 1) == 0 {
+            0
+        } else {
+            -2
+        };
+        self.frame_step = self.frame_step_offset;
+        self.frame_first_sequence = true;
+        // Mode 0 re-arms the frame IRQ: first flag 29831 clocks after
+        // the write on an even cycle, one clock later on an odd cycle
+        // (the write lands between two APU clocks).
+        self.frame_irq_arm = 0;
+        self.frame_irq_countdown = if self.frame_mode == 0 && !self.frame_irq_inhibit {
+            29831
+                + if (self.total_cpu_cycles & 1) == 0 {
+                    0
+                } else {
+                    1
+                }
+        } else {
+            0
+        };
+        // mode 1 ($80)：寫入後立刻觸發一次 quarter + half，
+        // 發生在 sequencer 重置之後，不計入 frame_step。
+        if self.frame_mode == 1 {
+            self.clock_quarter_frame();
+            self.clock_half_frame();
+        }
+    }
+
+    /// Establish the power-up frame-counter state.
+    ///
+    /// Hardware behaves as if `$4017` were written with `$00` 9-12 CPU clocks
+    /// before the first instruction (blargg `09.reset_timing`), so the counter
+    /// is already `POWER_ON_FRAME_AGE` clocks into its first mode-0 sequence
+    /// when the first opcode is fetched. Call this right before that fetch —
+    /// `NesConsole` does it after the reset vector has been read.
+    pub fn power_on(&mut self) {
+        // Power-up leaves the frame IRQ flag low (blargg 4015_cleared and
+        // irq_flag_cleared): a plain $4017 write would not clear it.
+        self.frame_interrupt = false;
+        self.frame_irq_arm = 0;
+        self.write_frame_counter(0x00);
+        self.age_frame_counter();
+    }
+
+    /// Apply a hardware reset to the APU.
+    ///
+    /// Reset drives the APU as if `$4015` had been written with `$00`: every
+    /// channel is disabled and its length counter is cleared, and the frame and
+    /// DMC IRQ flags go low. The write-only registers — duty, period, halt,
+    /// sweep, envelope, DMC sample address/length — keep their contents, which
+    /// is why a game can tell a reset from a power cycle (blargg `apu_reset`
+    /// checks exactly this: a triangle still halting keeps playing).
+    ///
+    /// The frame counter is re-armed separately by
+    /// [`APU::rearm_frame_counter`] once the CPU has finished its reset
+    /// sequence, since the replay has to be aged against the first instruction.
+    pub fn reset(&mut self) {
+        let _ = self.write_register(0x4015, 0x00);
+        self.frame_interrupt = false;
+        self.frame_irq_arm = 0;
+        self.dmc_interrupt = false;
+        // Drop the half-frame snapshot so a $4015 read right after the reset
+        // cannot see pre-reset length counters.
+        self.length_before_clock = [0; 4];
+        self.length_clocked = false;
+    }
+
+    /// Replay the last `$4017` value after a reset, as hardware does.
+    ///
+    /// The frame counter is armed from the surviving `$4017` register and then
+    /// pre-aged by the same 9 clocks as power-up, so the first instruction sees
+    /// the same phase a cold boot produces (blargg `4017_timing`).
+    pub fn rearm_frame_counter(&mut self) {
+        let value = self.last_4017_write;
+        self.write_frame_counter(value);
+        self.age_frame_counter();
+    }
+
+    /// Advance the frame counter by the post-write reset delay without
+    /// generating samples: the APU clock has not started yet.
+    fn age_frame_counter(&mut self) {
+        for _ in 0..POWER_ON_FRAME_AGE {
+            self.frame_counter_tick();
+        }
     }
 
     /// 讀取 APU status register（$4015）。
@@ -226,16 +344,26 @@ impl APU {
     /// 讀取後清除 frame interrupt。
     pub fn read_status(&mut self) -> u8 {
         let mut s = 0u8;
-        if self.pulse1.length_counter > 0 {
+        let lengths = if self.length_clocked {
+            self.length_before_clock
+        } else {
+            [
+                self.pulse1.length_counter,
+                self.pulse2.length_counter,
+                self.triangle.length_counter,
+                self.noise.length_counter,
+            ]
+        };
+        if lengths[0] > 0 {
             s |= 0x01;
         }
-        if self.pulse2.length_counter > 0 {
+        if lengths[1] > 0 {
             s |= 0x02;
         }
-        if self.triangle.length_counter > 0 {
+        if lengths[2] > 0 {
             s |= 0x04;
         }
-        if self.noise.length_counter > 0 {
+        if lengths[3] > 0 {
             s |= 0x08;
         }
         if self.dmc.bytes_remaining > 0 {
@@ -251,6 +379,15 @@ impl APU {
         s
     }
 
+    /// Whether a length-reload write in the current APU cycle must be ignored.
+    ///
+    /// A reload written on the same cycle as the half-frame clock is only
+    /// honoured when the counter was zero before that clock; otherwise the
+    /// clock wins and the reload is discarded (blargg `11.len_reload_timing`).
+    fn length_reload_blocked(&self, channel: usize) -> bool {
+        self.length_clocked && self.length_before_clock[channel] > 0
+    }
+
     /// Frame counter quarter-frame clock
     fn clock_quarter_frame(&mut self) {
         self.pulse1.envelope.clock();
@@ -261,6 +398,13 @@ impl APU {
 
     /// Frame counter half-frame clock
     fn clock_half_frame(&mut self) {
+        self.length_before_clock = [
+            self.pulse1.length_counter,
+            self.pulse2.length_counter,
+            self.triangle.length_counter,
+            self.noise.length_counter,
+        ];
+        self.length_clocked = true;
         self.pulse1.clock_length();
         self.pulse2.clock_length();
         self.triangle.clock_length();
@@ -288,10 +432,11 @@ impl APU {
         self.frame_step += 1;
         let s = self.frame_step;
 
-        // The first sequence after a $4017 write is phase-shifted by three
-        // CPU cycles (the write lands inside the APU's 2-cycle grid); later
-        // sequences run at the nominal period.
-        let shift = if self.frame_first_sequence { 3 } else { 0 };
+        // The first half-frame after a $4017 write lands two cycles after the
+        // nominal FRAME_EVENTS offsets: 14915/29831/37283 instead of
+        // 14913/29829/37281 (blargg 05.len_timing_mode0 and 10.len_halt_timing
+        // pin those edges). Later sequences run at the nominal period.
+        let shift = if self.frame_first_sequence { 2 } else { 0 };
 
         if s == FRAME_EVENTS[0]
             || s == FRAME_EVENTS[1]
@@ -348,6 +493,7 @@ impl APU {
     /// `fill_sample()` 回填（DMC 本身不做記憶體存取）。
     pub fn tick_one(&mut self) -> Option<u16> {
         self.total_cpu_cycles += 1;
+        self.length_clocked = false;
         self.triangle.clock_timer();
         if self.total_cpu_cycles.is_multiple_of(2) {
             self.pulse1.clock_timer();
@@ -407,470 +553,192 @@ impl APU {
 
     /// 序列化 APU 狀態為位元組向量（用於 save state）
     pub fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        fn pu8(v: &mut Vec<u8>, val: u8) {
-            v.push(val);
-        }
-        fn pu16(v: &mut Vec<u8>, val: u16) {
-            v.extend_from_slice(&val.to_le_bytes());
-        }
-        fn pbool(v: &mut Vec<u8>, val: bool) {
-            v.push(if val { 1 } else { 0 });
-        }
+        let mut out = Writer::new();
 
-        // Pulse 1
-        pbool(&mut v, self.pulse1.enabled);
-        pu8(&mut v, self.pulse1.duty);
-        pu8(&mut v, self.pulse1.duty_pos);
-        pu16(&mut v, self.pulse1.timer_period);
-        pu16(&mut v, self.pulse1.timer_value);
-        pu8(&mut v, self.pulse1.length_counter);
-        pbool(&mut v, self.pulse1.length_halt);
-        pbool(&mut v, self.pulse1.envelope.start);
-        pbool(&mut v, self.pulse1.envelope.loop_flag);
-        pbool(&mut v, self.pulse1.envelope.constant_volume);
-        pu8(&mut v, self.pulse1.envelope.volume);
-        pu8(&mut v, self.pulse1.envelope.decay_level);
-        pu8(&mut v, self.pulse1.envelope.divider);
-        pbool(&mut v, self.pulse1.sweep.enabled);
-        pu8(&mut v, self.pulse1.sweep.period);
-        pbool(&mut v, self.pulse1.sweep.negate);
-        pu8(&mut v, self.pulse1.sweep.shift);
-        pbool(&mut v, self.pulse1.sweep.reload);
-        pu8(&mut v, self.pulse1.sweep.divider);
+        out.bool(self.pulse1.enabled);
+        out.u8(self.pulse1.duty);
+        out.u8(self.pulse1.duty_pos);
+        out.u16(self.pulse1.timer_period);
+        out.u16(self.pulse1.timer_value);
+        out.u8(self.pulse1.length_counter);
+        out.bool(self.pulse1.length_halt);
+        out.bool(self.pulse1.envelope.start);
+        out.bool(self.pulse1.envelope.loop_flag);
+        out.bool(self.pulse1.envelope.constant_volume);
+        out.u8(self.pulse1.envelope.volume);
+        out.u8(self.pulse1.envelope.decay_level);
+        out.u8(self.pulse1.envelope.divider);
+        out.bool(self.pulse1.sweep.enabled);
+        out.u8(self.pulse1.sweep.period);
+        out.bool(self.pulse1.sweep.negate);
+        out.u8(self.pulse1.sweep.shift);
+        out.bool(self.pulse1.sweep.reload);
+        out.u8(self.pulse1.sweep.divider);
 
-        // Pulse 2
-        pbool(&mut v, self.pulse2.enabled);
-        pu8(&mut v, self.pulse2.duty);
-        pu8(&mut v, self.pulse2.duty_pos);
-        pu16(&mut v, self.pulse2.timer_period);
-        pu16(&mut v, self.pulse2.timer_value);
-        pu8(&mut v, self.pulse2.length_counter);
-        pbool(&mut v, self.pulse2.length_halt);
-        pbool(&mut v, self.pulse2.envelope.start);
-        pbool(&mut v, self.pulse2.envelope.loop_flag);
-        pbool(&mut v, self.pulse2.envelope.constant_volume);
-        pu8(&mut v, self.pulse2.envelope.volume);
-        pu8(&mut v, self.pulse2.envelope.decay_level);
-        pu8(&mut v, self.pulse2.envelope.divider);
-        pbool(&mut v, self.pulse2.sweep.enabled);
-        pu8(&mut v, self.pulse2.sweep.period);
-        pbool(&mut v, self.pulse2.sweep.negate);
-        pu8(&mut v, self.pulse2.sweep.shift);
-        pbool(&mut v, self.pulse2.sweep.reload);
-        pu8(&mut v, self.pulse2.sweep.divider);
+        out.bool(self.pulse2.enabled);
+        out.u8(self.pulse2.duty);
+        out.u8(self.pulse2.duty_pos);
+        out.u16(self.pulse2.timer_period);
+        out.u16(self.pulse2.timer_value);
+        out.u8(self.pulse2.length_counter);
+        out.bool(self.pulse2.length_halt);
+        out.bool(self.pulse2.envelope.start);
+        out.bool(self.pulse2.envelope.loop_flag);
+        out.bool(self.pulse2.envelope.constant_volume);
+        out.u8(self.pulse2.envelope.volume);
+        out.u8(self.pulse2.envelope.decay_level);
+        out.u8(self.pulse2.envelope.divider);
+        out.bool(self.pulse2.sweep.enabled);
+        out.u8(self.pulse2.sweep.period);
+        out.bool(self.pulse2.sweep.negate);
+        out.u8(self.pulse2.sweep.shift);
+        out.bool(self.pulse2.sweep.reload);
+        out.u8(self.pulse2.sweep.divider);
 
-        // Triangle
-        pbool(&mut v, self.triangle.enabled);
-        pu16(&mut v, self.triangle.timer_period);
-        pu16(&mut v, self.triangle.timer_value);
-        pu8(&mut v, self.triangle.length_counter);
-        pbool(&mut v, self.triangle.length_halt);
-        pu8(&mut v, self.triangle.linear_counter);
-        pu8(&mut v, self.triangle.linear_reload_value);
-        pbool(&mut v, self.triangle.linear_reload_flag);
-        pu8(&mut v, self.triangle.sequence_pos);
+        out.bool(self.triangle.enabled);
+        out.u16(self.triangle.timer_period);
+        out.u16(self.triangle.timer_value);
+        out.u8(self.triangle.length_counter);
+        out.bool(self.triangle.length_halt);
+        out.u8(self.triangle.linear_counter);
+        out.u8(self.triangle.linear_reload_value);
+        out.bool(self.triangle.linear_reload_flag);
+        out.u8(self.triangle.sequence_pos);
 
-        // Noise
-        pbool(&mut v, self.noise.enabled);
-        pbool(&mut v, self.noise.mode);
-        pu16(&mut v, self.noise.timer_period);
-        pu16(&mut v, self.noise.timer_value);
-        pu8(&mut v, self.noise.length_counter);
-        pbool(&mut v, self.noise.length_halt);
-        pbool(&mut v, self.noise.envelope.start);
-        pbool(&mut v, self.noise.envelope.loop_flag);
-        pbool(&mut v, self.noise.envelope.constant_volume);
-        pu8(&mut v, self.noise.envelope.volume);
-        pu8(&mut v, self.noise.envelope.decay_level);
-        pu8(&mut v, self.noise.envelope.divider);
-        pu16(&mut v, self.noise.shift_register);
+        out.bool(self.noise.enabled);
+        out.bool(self.noise.mode);
+        out.u16(self.noise.timer_period);
+        out.u16(self.noise.timer_value);
+        out.u8(self.noise.length_counter);
+        out.bool(self.noise.length_halt);
+        out.bool(self.noise.envelope.start);
+        out.bool(self.noise.envelope.loop_flag);
+        out.bool(self.noise.envelope.constant_volume);
+        out.u8(self.noise.envelope.volume);
+        out.u8(self.noise.envelope.decay_level);
+        out.u8(self.noise.envelope.divider);
+        out.u16(self.noise.shift_register);
 
-        // DMC
-        pbool(&mut v, self.dmc.enabled);
-        pu8(&mut v, self.dmc.output_level);
-        pbool(&mut v, self.dmc.irq_enabled);
-        pbool(&mut v, self.dmc.loop_flag);
-        pu16(&mut v, self.dmc.timer_period);
-        pu16(&mut v, self.dmc.timer_value);
-        pu16(&mut v, self.dmc.sample_address);
-        pu16(&mut v, self.dmc.sample_length);
-        pu16(&mut v, self.dmc.current_address);
-        pu16(&mut v, self.dmc.bytes_remaining);
-        pu8(&mut v, self.dmc.sample_buffer);
-        pu8(&mut v, self.dmc.bits_remaining);
-        pbool(&mut v, self.dmc.silence_flag);
-        pbool(&mut v, self.dmc.sample_buffer_empty);
+        out.bool(self.dmc.enabled);
+        out.u8(self.dmc.output_level);
+        out.bool(self.dmc.irq_enabled);
+        out.bool(self.dmc.loop_flag);
+        out.u16(self.dmc.timer_period);
+        out.u16(self.dmc.timer_value);
+        out.u16(self.dmc.sample_address);
+        out.u16(self.dmc.sample_length);
+        out.u16(self.dmc.current_address);
+        out.u16(self.dmc.bytes_remaining);
+        out.u8(self.dmc.sample_buffer);
+        out.u8(self.dmc.bits_remaining);
+        out.bool(self.dmc.silence_flag);
+        out.bool(self.dmc.sample_buffer_empty);
 
-        // Frame counter
-        pu8(&mut v, self.frame_mode);
-        pbool(&mut v, self.frame_irq_inhibit);
-        pbool(&mut v, self.frame_interrupt);
-        pbool(&mut v, self.dmc_interrupt);
-        v.extend_from_slice(&self.frame_step.to_le_bytes());
-        // frame_step_offset: 0 or -1 (stored as i64, 8 bytes)
-        v.extend_from_slice(&self.frame_step_offset.to_le_bytes());
+        out.u8(self.frame_mode);
+        out.bool(self.frame_irq_inhibit);
+        out.bool(self.frame_interrupt);
+        out.bool(self.dmc_interrupt);
+        out.i64(self.frame_step);
+        out.i64(self.frame_step_offset);
 
-        v
+        out.finish()
     }
 
     /// 從位元組 slice 反序列化 APU 狀態
     pub fn load_state(&mut self, data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
-        }
-        let mut off = 0usize;
+        let mut reader = Reader::new(data);
+        self.restore(&mut reader).is_some()
+    }
 
-        fn rd(data: &[u8], off: &mut usize) -> u8 {
-            let v = data[*off];
-            *off += 1;
-            v
-        }
-        fn rd16(data: &[u8], off: &mut usize) -> u16 {
-            let v = u16::from_le_bytes([data[*off], data[*off + 1]]);
-            *off += 2;
-            v
-        }
-        fn rdb(data: &[u8], off: &mut usize) -> bool {
-            rd(data, off) != 0
-        }
-        fn rdi64(data: &[u8], off: &mut usize) -> i64 {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&data[*off..*off + 8]);
-            *off += 8;
-            i64::from_le_bytes(bytes)
-        }
-        if data.len() < off + 1 {
-            return false;
-        }
+    fn restore(&mut self, reader: &mut Reader<'_>) -> Option<()> {
+        self.pulse1.enabled = reader.bool()?;
+        self.pulse1.duty = reader.u8()?;
+        self.pulse1.duty_pos = reader.u8()?;
+        self.pulse1.timer_period = reader.u16()?;
+        self.pulse1.timer_value = reader.u16()?;
+        self.pulse1.length_counter = reader.u8()?;
+        self.pulse1.length_halt = reader.bool()?;
+        self.pulse1.envelope.start = reader.bool()?;
+        self.pulse1.envelope.loop_flag = reader.bool()?;
+        self.pulse1.envelope.constant_volume = reader.bool()?;
+        self.pulse1.envelope.volume = reader.u8()?;
+        self.pulse1.envelope.decay_level = reader.u8()?;
+        self.pulse1.envelope.divider = reader.u8()?;
+        self.pulse1.sweep.enabled = reader.bool()?;
+        self.pulse1.sweep.period = reader.u8()?;
+        self.pulse1.sweep.negate = reader.bool()?;
+        self.pulse1.sweep.shift = reader.u8()?;
+        self.pulse1.sweep.reload = reader.bool()?;
+        self.pulse1.sweep.divider = reader.u8()?;
 
-        self.pulse1.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.duty = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.duty_pos = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.timer_period = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.pulse1.timer_value = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.pulse1.length_counter = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.length_halt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.start = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.loop_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.constant_volume = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.volume = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.decay_level = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.envelope.divider = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.period = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.negate = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.shift = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.reload = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse1.sweep.divider = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
+        self.pulse2.enabled = reader.bool()?;
+        self.pulse2.duty = reader.u8()?;
+        self.pulse2.duty_pos = reader.u8()?;
+        self.pulse2.timer_period = reader.u16()?;
+        self.pulse2.timer_value = reader.u16()?;
+        self.pulse2.length_counter = reader.u8()?;
+        self.pulse2.length_halt = reader.bool()?;
+        self.pulse2.envelope.start = reader.bool()?;
+        self.pulse2.envelope.loop_flag = reader.bool()?;
+        self.pulse2.envelope.constant_volume = reader.bool()?;
+        self.pulse2.envelope.volume = reader.u8()?;
+        self.pulse2.envelope.decay_level = reader.u8()?;
+        self.pulse2.envelope.divider = reader.u8()?;
+        self.pulse2.sweep.enabled = reader.bool()?;
+        self.pulse2.sweep.period = reader.u8()?;
+        self.pulse2.sweep.negate = reader.bool()?;
+        self.pulse2.sweep.shift = reader.u8()?;
+        self.pulse2.sweep.reload = reader.bool()?;
+        self.pulse2.sweep.divider = reader.u8()?;
 
-        self.pulse2.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.duty = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.duty_pos = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.timer_period = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.pulse2.timer_value = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.pulse2.length_counter = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.length_halt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.start = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.loop_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.constant_volume = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.volume = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.decay_level = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.envelope.divider = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.period = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.negate = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.shift = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.reload = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.pulse2.sweep.divider = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
+        self.triangle.enabled = reader.bool()?;
+        self.triangle.timer_period = reader.u16()?;
+        self.triangle.timer_value = reader.u16()?;
+        self.triangle.length_counter = reader.u8()?;
+        self.triangle.length_halt = reader.bool()?;
+        self.triangle.linear_counter = reader.u8()?;
+        self.triangle.linear_reload_value = reader.u8()?;
+        self.triangle.linear_reload_flag = reader.bool()?;
+        self.triangle.sequence_pos = reader.u8()?;
 
-        self.triangle.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.timer_period = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.triangle.timer_value = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.triangle.length_counter = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.length_halt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.linear_counter = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.linear_reload_value = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.linear_reload_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.triangle.sequence_pos = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
+        self.noise.enabled = reader.bool()?;
+        self.noise.mode = reader.bool()?;
+        self.noise.timer_period = reader.u16()?;
+        self.noise.timer_value = reader.u16()?;
+        self.noise.length_counter = reader.u8()?;
+        self.noise.length_halt = reader.bool()?;
+        self.noise.envelope.start = reader.bool()?;
+        self.noise.envelope.loop_flag = reader.bool()?;
+        self.noise.envelope.constant_volume = reader.bool()?;
+        self.noise.envelope.volume = reader.u8()?;
+        self.noise.envelope.decay_level = reader.u8()?;
+        self.noise.envelope.divider = reader.u8()?;
+        self.noise.shift_register = reader.u16()?;
 
-        self.noise.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.mode = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.timer_period = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.noise.timer_value = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.noise.length_counter = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.length_halt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.start = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.loop_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.constant_volume = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.volume = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.decay_level = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.envelope.divider = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.noise.shift_register = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
+        self.dmc.enabled = reader.bool()?;
+        self.dmc.output_level = reader.u8()?;
+        self.dmc.irq_enabled = reader.bool()?;
+        self.dmc.loop_flag = reader.bool()?;
+        self.dmc.timer_period = reader.u16()?;
+        self.dmc.timer_value = reader.u16()?;
+        self.dmc.sample_address = reader.u16()?;
+        self.dmc.sample_length = reader.u16()?;
+        self.dmc.current_address = reader.u16()?;
+        self.dmc.bytes_remaining = reader.u16()?;
+        self.dmc.sample_buffer = reader.u8()?;
+        self.dmc.bits_remaining = reader.u8()?;
+        self.dmc.silence_flag = reader.bool()?;
+        self.dmc.sample_buffer_empty = reader.bool()?;
 
-        self.dmc.enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
+        self.frame_mode = reader.u8()?;
+        self.frame_irq_inhibit = reader.bool()?;
+        self.frame_interrupt = reader.bool()?;
+        self.dmc_interrupt = reader.bool()?;
+        if let Some(step) = reader.i64() {
+            self.frame_step = step;
         }
-        self.dmc.output_level = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.irq_enabled = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.loop_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.timer_period = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.timer_value = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.sample_address = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.sample_length = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.current_address = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.bytes_remaining = rd16(data, &mut off);
-        if data.len() < off {
-            return false;
-        }
-        self.dmc.sample_buffer = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.bits_remaining = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.silence_flag = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc.sample_buffer_empty = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-
-        self.frame_mode = rd(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.frame_irq_inhibit = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.frame_interrupt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        self.dmc_interrupt = rdb(data, &mut off);
-        if data.len() <= off {
-            return false;
-        }
-        if data.len() >= off + 8 {
-            self.frame_step = rdi64(data, &mut off);
-        }
-        // frame_step_offset: 0 or -1 (optional — older saves may not have this)
-        self.frame_step_offset = if data.len() >= off + 8 {
-            rdi64(data, &mut off)
-        } else {
-            0
-        };
-        true
+        self.frame_step_offset = reader.i64().unwrap_or(0);
+        Some(())
     }
 }
 

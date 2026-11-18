@@ -1,8 +1,8 @@
 //! Mapper 4 — MMC3, including the A12 scanline IRQ counter.
 
-use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
 use super::Mirroring;
+use crate::state::{Reader, Writer};
 
 pub struct Mapper4 {
     prg_rom: Vec<u8>,
@@ -16,6 +16,9 @@ pub struct Mapper4 {
     irq_counter: u8,
     irq_enable: bool,
     irq_reload: bool,
+    /// IRQ line latched by the counter. Stays asserted until the game
+    /// acknowledges it by writing $E000/$E001.
+    irq_pending: bool,
     prg_ram: [u8; 8192],
     /// This cartridge has battery-backed PRG RAM.
     battery: bool,
@@ -25,6 +28,17 @@ pub struct Mapper4 {
 }
 
 impl Mapper4 {
+    /// IRQ state for the local harness: (enabled, counter, latch, pending).
+    #[cfg(all(test, feature = "local_harness"))]
+    pub fn irq_debug(&self) -> (bool, u8, u8, bool) {
+        (
+            self.irq_enable,
+            self.irq_counter,
+            self.irq_latch,
+            self.irq_pending,
+        )
+    }
+
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>, mirroring: Mirroring, battery: bool) -> Self {
         Self {
             prg_rom,
@@ -38,6 +52,7 @@ impl Mapper4 {
             irq_counter: 0,
             irq_enable: false,
             irq_reload: false,
+            irq_pending: false,
             prg_ram: [0; 8192],
             chr_dirty: 0xFF,
             battery,
@@ -46,6 +61,25 @@ impl Mapper4 {
 }
 
 impl Mapper for Mapper4 {
+    /// MMC3 reset: bank select and all bank/IRQ registers return to their
+    /// power-on values, so a stale enabled counter cannot fire an IRQ before
+    /// the game re-programs the mapper. Mirroring follows the game's own
+    /// $A000 write and is left alone here.
+    fn reset(&mut self) {
+        self.bank_select = 0;
+        self.bank_regs = [0; 8];
+        self.prg_mode = 0;
+        self.chr_mode = 0;
+        self.irq_latch = 0;
+        self.irq_counter = 0;
+        self.irq_enable = false;
+        self.irq_reload = false;
+        self.irq_pending = false;
+        // Force a full CHR refresh: the PPU's CHR RAM may hold banks the new
+        // reset handler never maps again.
+        self.chr_dirty = 0xFF;
+    }
+
     fn read_prg(&self, addr: u16) -> u8 {
         match addr {
             0x6000..=0x7FFF => self
@@ -164,11 +198,16 @@ impl Mapper for Mapper4 {
                 if addr & 0x0001 == 0 {
                     self.irq_latch = data;
                 } else {
+                    // $C001: the next A12 edge reloads from the latch instead
+                    // of decrementing.
                     self.irq_reload = true;
                 }
             }
             0xE000..=0xFFFF => {
+                // $E000 disables the IRQ, $E001 enables it; either write also
+                // acknowledges a pending IRQ.
                 self.irq_enable = addr & 0x0001 != 0;
+                self.irq_pending = false;
             }
             _ => {}
         }
@@ -199,56 +238,57 @@ impl Mapper for Mapper4 {
     }
 
     fn tick_mapper_irq(&mut self) -> bool {
-        if self.irq_reload {
-            self.irq_counter = self.irq_latch;
-            self.irq_reload = false;
-            return false;
-        }
-        if self.irq_counter == 0 {
+        // Revision B behaviour (blargg `6.MMC3_rev_B`): reload when the counter
+        // is zero or a $C001 write asked for it, otherwise decrement; the IRQ
+        // line is asserted whenever the counter lands on zero. Revision A
+        // differs only in when that zero check runs, and no emulator can satisfy
+        // both ROMs at once.
+        if self.irq_counter == 0 || self.irq_reload {
             self.irq_counter = self.irq_latch;
         } else {
             self.irq_counter -= 1;
-            if self.irq_counter == 0 && self.irq_enable {
-                return true;
-            }
         }
-        false
+        self.irq_reload = false;
+        if self.irq_counter == 0 && self.irq_enable {
+            self.irq_pending = true;
+        }
+        self.irq_pending
+    }
+
+    fn irq_line(&self) -> bool {
+        self.irq_pending
     }
 
     fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        write_u8_vec(&mut v, self.bank_select);
-        v.extend_from_slice(&self.bank_regs);
-        write_u8_vec(&mut v, self.prg_mode);
-        write_u8_vec(&mut v, self.chr_mode);
-        write_u8_vec(&mut v, self.irq_latch);
-        write_u8_vec(&mut v, self.irq_counter);
-        write_u8_vec(&mut v, if self.irq_enable { 1 } else { 0 });
-        write_u8_vec(&mut v, if self.irq_reload { 1 } else { 0 });
-        v.extend_from_slice(&self.prg_ram);
-        v
+        let mut out = Writer::new();
+        out.u8(self.bank_select);
+        out.bytes(&self.bank_regs);
+        out.u8(self.prg_mode);
+        out.u8(self.chr_mode);
+        out.u8(self.irq_latch);
+        out.u8(self.irq_counter);
+        out.bool(self.irq_enable);
+        out.bool(self.irq_reload);
+        out.bool(self.irq_pending);
+        out.bytes(&self.prg_ram);
+        out.finish()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.len() < 13 {
-            return;
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        self.bank_select = reader.u8()?;
+        self.bank_regs = reader.array()?;
+        self.prg_mode = reader.u8()?;
+        self.chr_mode = reader.u8()?;
+        self.irq_latch = reader.u8()?;
+        self.irq_counter = reader.u8()?;
+        self.irq_enable = reader.bool()?;
+        self.irq_reload = reader.bool()?;
+        self.irq_pending = reader.bool()?;
+        if reader.remaining() >= 8192 {
+            self.prg_ram.copy_from_slice(reader.bytes(8192)?);
         }
-        let mut off = 0;
-        self.bank_select = read_u8_slice(data, &mut off);
-        if data.len() >= 8 + off {
-            self.bank_regs.copy_from_slice(&data[off..off + 8]);
-            off += 8;
-        }
-        self.prg_mode = read_u8_slice(data, &mut off);
-        self.chr_mode = read_u8_slice(data, &mut off);
-        self.irq_latch = read_u8_slice(data, &mut off);
-        self.irq_counter = read_u8_slice(data, &mut off);
-        self.irq_enable = read_u8_slice(data, &mut off) != 0;
-        self.irq_reload = read_u8_slice(data, &mut off) != 0;
-        if data.len() >= off + 8192 {
-            self.prg_ram.copy_from_slice(&data[off..off + 8192]);
-        }
-        // Restored banks may differ from what the PPU holds; force a full copy.
         self.chr_dirty = 0xFF;
+        Some(())
     }
 }

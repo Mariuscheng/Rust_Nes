@@ -1,8 +1,8 @@
 //! Mapper 69 — FME-7 (Sunsoft 5B).
 // Sunsoft Batman: Return of the Joker and other Sunsoft games.
 
-use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
+use crate::state::{Reader, Writer};
 
 pub struct Fme7 {
     prg_rom: Vec<u8>,
@@ -185,38 +185,30 @@ impl Mapper for Fme7 {
     }
 
     fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        write_u8_vec(&mut v, self.command);
-        v.extend_from_slice(&self.banks);
-        v.extend_from_slice(&self.irq_counter.to_le_bytes());
-        v.extend_from_slice(&self.irq_latch.to_le_bytes());
-        v.push(if self.irq_enable { 1 } else { 0 });
-        v.push(if self.irq_cycle_mode { 1 } else { 0 });
-        v.extend_from_slice(&self.prg_ram);
-        v
+        let mut out = Writer::new();
+        out.u8(self.command);
+        out.bytes(&self.banks);
+        out.u16(self.irq_counter);
+        out.u16(self.irq_latch);
+        out.bool(self.irq_enable);
+        out.bool(self.irq_cycle_mode);
+        out.bytes(&self.prg_ram);
+        out.finish()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.len() < 16 {
-            return;
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        self.command = reader.u8()?;
+        self.banks = reader.array()?;
+        self.irq_counter = reader.u16()?;
+        self.irq_latch = reader.u16()?;
+        self.irq_enable = reader.bool()?;
+        self.irq_cycle_mode = reader.bool()?;
+        if reader.remaining() >= 8192 {
+            self.prg_ram.copy_from_slice(reader.bytes(8192)?);
         }
-        let mut off = 0;
-        self.command = read_u8_slice(data, &mut off);
-        self.banks.copy_from_slice(&data[off..off + 8]);
-        off += 8;
-        self.irq_counter = u16::from_le_bytes([data[off], data[off + 1]]);
-        off += 2;
-        self.irq_latch = u16::from_le_bytes([data[off], data[off + 1]]);
-        off += 2;
-        self.irq_enable = data[off] != 0;
-        off += 1;
-        self.irq_cycle_mode = data[off] != 0;
-        off += 1;
-        if data.len() >= off + 8192 {
-            self.prg_ram.copy_from_slice(&data[off..off + 8192]);
-        }
-        // Restored banks may differ from what the PPU holds; force a full copy.
         self.chr_dirty = 0xFF;
+        Some(())
     }
 }
 

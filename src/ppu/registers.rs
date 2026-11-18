@@ -47,6 +47,26 @@ impl Default for PpuControl {
 }
 
 impl PpuControl {
+    pub fn as_u8(&self) -> u8 {
+        let mut res = self.nametable_addr & 0x03;
+        if self.nmi_output {
+            res |= 0x80;
+        }
+        if self.sprite_size {
+            res |= 0x20;
+        }
+        if self.background_pattern_addr == 0x1000 {
+            res |= 0x10;
+        }
+        if self.sprite_pattern_addr == 0x1000 {
+            res |= 0x08;
+        }
+        if self.vram_increment == 32 {
+            res |= 0x04;
+        }
+        res
+    }
+
     pub fn update(&mut self, val: u8) {
         self.nmi_output = (val & 0x80) != 0;
         self.sprite_size = (val & 0x20) != 0;

@@ -115,6 +115,13 @@ pub struct MainBus {
     irq_before_prev_tick: bool,
     /// Pending $4014 OAM DMA page, serviced after the current instruction.
     dma_request: Option<u8>,
+    /// Address the DMC wants fetched. It is serviced on the next CPU read
+    /// cycle, because the 2A03 can only halt the CPU on a read.
+    dmc_dma_pending: Option<u16>,
+    /// Mapper IRQ assertions as (frame, scanline, dot); debug aid for the local
+    /// harness only.
+    #[cfg(all(test, feature = "local_harness"))]
+    pub mapper_irq_log: Vec<(u64, u16, u16)>,
 }
 
 impl MainBus {
@@ -145,6 +152,9 @@ impl MainBus {
             irq_before_tick: false,
             irq_before_prev_tick: false,
             dma_request: None,
+            dmc_dma_pending: None,
+            #[cfg(all(test, feature = "local_harness"))]
+            mapper_irq_log: Vec::new(),
         }
     }
 
@@ -168,12 +178,17 @@ impl MainBus {
     /// Tick mapper IRQ once (MMC3 scanline counter on A12 edge).
     pub fn tick_mapper_irq(&mut self) {
         let irq = self.mapper.tick_mapper_irq();
+        #[cfg(all(test, feature = "local_harness"))]
+        if irq && !self.ppu.mapper_irq && self.mapper_irq_log.len() < 20_000 {
+            self.mapper_irq_log
+                .push((self.ppu.frame, self.ppu.scanline, self.ppu.cycle));
+        }
         self.ppu.mapper_irq = irq;
     }
 
     /// Read the frame buffer into `buf`.
-    pub fn read_frame_buffer(&self, buf: &mut [u32; 256 * 240]) {
-        buf.copy_from_slice(self.ppu.frame_buffer.as_ref());
+    pub fn read_frame_buffer(&self, buf: &mut [u32]) {
+        buf.copy_from_slice(&self.ppu.frame_buffer);
     }
 
     // ══════════════════════════════════════════════
@@ -186,10 +201,10 @@ impl MainBus {
     /// fetches the byte. Each fetched byte stalls the CPU for 4 cycles, which
     /// is accumulated in `dmc_stolen_cycles` and paid by `CPU::step`.
     fn clock_apu(&mut self) {
+        // The fetch itself waits for a CPU read cycle (see `BusInterface::read`):
+        // the 2A03 can only halt the CPU on a read.
         if let Some(addr) = self.apu.tick_one() {
-            let byte = self.peek(addr);
-            self.apu.fill_sample(byte);
-            self.dmc_stolen_cycles = self.dmc_stolen_cycles.saturating_add(4);
+            self.dmc_dma_pending.get_or_insert(addr);
         }
     }
 
@@ -200,6 +215,47 @@ impl MainBus {
             0x6000..=0xFFFF => self.mapper.read_prg(addr),
             _ => 0,
         }
+    }
+
+    /// Put the APU frame counter into its power-up phase. The console calls
+    /// this after the reset vector fetch, i.e. right before the first
+    /// instruction (see [`APU::power_on`]).
+    pub(crate) fn power_on_apu(&mut self) {
+        self.apu.power_on();
+    }
+
+    /// Reset the PPU, APU and mapper to their power-on register state.
+    ///
+    /// Memory that a reset does not touch is preserved: work RAM, PRG RAM,
+    /// VRAM, palette RAM, OAM, CHR data and every write-only APU/mapper
+    /// register. The console calls this before [`CPU::reset`], then re-arms the
+    /// APU frame counter once the reset sequence has been fetched.
+    pub(crate) fn reset_peripherals(&mut self) {
+        self.ppu.reset();
+        self.apu.reset();
+        self.mapper.reset();
+        self.sync_mirroring();
+        // The mapper's bank registers are back at their power-on values, so
+        // re-copy CHR: the PPU's copy may still hold banks the reset handler
+        // never selects again (MMC3 reports every block dirty after a reset).
+        self.refresh_chr();
+
+        // Drop anything the old program had in flight.
+        self.dma_request = None;
+        self.dmc_dma_pending = None;
+        self.dmc_stolen_cycles = 0;
+        self.nmi_line = false;
+        self.nmi_line_prev_sample = false;
+        self.nmi_edge_seen = false;
+        self.nmi_edge_seen_prev = false;
+        self.irq_before_tick = false;
+        self.irq_before_prev_tick = false;
+    }
+
+    /// Re-arm the APU frame counter from the surviving `$4017` value after a
+    /// reset (see [`APU::rearm_frame_counter`]).
+    pub(crate) fn rearm_apu_frame_counter(&mut self) {
+        self.apu.rearm_frame_counter();
     }
 
     /// Drain accumulated audio samples.
@@ -326,6 +382,10 @@ impl MainBus {
             vram,
             palette: self.ppu.palette,
             chr_ram: self.ppu.chr_ram,
+            ctrl: self.ppu.ctrl.as_u8(),
+            status: self.ppu.status.as_u8(),
+            mask: self.ppu.mask,
+            has_registers: true,
         }
     }
 
@@ -345,6 +405,13 @@ impl MainBus {
         self.ppu.vram[..2048].copy_from_slice(&snap.vram);
         self.ppu.palette.copy_from_slice(&snap.palette);
         self.ppu.chr_ram.copy_from_slice(&snap.chr_ram);
+        if snap.has_registers {
+            self.ppu.ctrl.update(snap.ctrl);
+            self.ppu.status.vblank = (snap.status & 0x80) != 0;
+            self.ppu.status.sprite_zero_hit = (snap.status & 0x40) != 0;
+            self.ppu.status.sprite_overflow = (snap.status & 0x20) != 0;
+            self.ppu.mask = snap.mask;
+        }
     }
 
     /// Save APU state for external serialization.
@@ -374,6 +441,15 @@ pub struct PpuSnapshot {
     pub vram: [u8; 2048],
     pub palette: [u8; 32],
     pub chr_ram: [u8; 8192],
+    /// Raw `PPUCTRL`, `PPUSTATUS` and `PPUMASK` bytes. Added in state format
+    /// `0x04`: a state saved without them renders nothing on a console that
+    /// has just booted, because `PPUMASK` still says "rendering off".
+    pub ctrl: u8,
+    pub status: u8,
+    pub mask: u8,
+    /// False for states written by format `0x03` and older, which did not
+    /// carry the register bytes; those loads leave the live registers alone.
+    pub has_registers: bool,
 }
 
 impl CpuBus for MainBus {
@@ -402,59 +478,24 @@ impl CpuBus for MainBus {
 impl BusInterface for MainBus {
     fn read(&mut self, addr: u16) -> u8 {
         BusInterface::tick(self);
-        match addr {
-            0x0000..=0x1FFF => {
-                let val = self.ram.read(addr);
-                self.open_bus_latch = val;
-                val
+
+        // The DMC has no memory access of its own: when its sample buffer is
+        // empty it pulls the CPU's RDY line, and the halt only takes effect on
+        // a read cycle. The 2A03's no-op cycles repeat the halted read before
+        // the fetch, so a register with read side effects ($2007, $4015,
+        // $4016/$4017) sees the access again — blargg's `dmc_dma_during_read4`
+        // suite is built around exactly that.
+        if let Some(sample_addr) = self.dmc_dma_pending.take() {
+            let repeat_reads = 1 + (self.cpu_cycle_count & 1) as usize;
+            for _ in 0..repeat_reads {
+                let _ = self.read_access(addr);
             }
-            0x2000..=0x3FFF => {
-                let reg = addr & 0x0007;
-                let val = self.ppu.cpu_read(reg);
-                if reg == 2 {
-                    // Reading $2002 clears the VBL flag. If the NMI edge was
-                    // seen in this very CPU cycle it has not been committed
-                    // yet, so the read cancels it; an edge that was already
-                    // visible at the previous boundary still fires.
-                    self.nmi_line = self.ppu.nmi_interrupt;
-                    if self.nmi_edge_seen && !self.nmi_edge_seen_prev {
-                        self.nmi_edge_seen = false;
-                    }
-                }
-                self.open_bus_latch = val;
-                val
-            }
-            0x4014 => {
-                // OAMDMA write-only — read returns open bus.
-                self.open_bus_latch
-            }
-            0x4015 => {
-                let val = self.apu.read_status();
-                self.open_bus_latch = val;
-                val
-            }
-            0x4016 => {
-                // bit0 = controller data; bits 1-7 = open bus
-                let joy_val = self.joypad1.cpu_read();
-                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
-                self.open_bus_latch = val;
-                val
-            }
-            0x4017 => {
-                // bit0 = controller data; bits 1-7 = open bus
-                let joy_val = self.joypad2.cpu_read();
-                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
-                self.open_bus_latch = val;
-                val
-            }
-            0x6000..=0xFFFF => {
-                let val = self.mapper.read_prg(addr);
-                self.open_bus_latch = val;
-                val
-            }
-            // $4000-$4013 (write-only APU), $4018-$5FFF (unmapped) → open bus
-            _ => self.open_bus_latch,
+            let byte = self.peek(sample_addr);
+            self.apu.fill_sample(byte);
+            self.dmc_stolen_cycles = self.dmc_stolen_cycles.saturating_add(4);
         }
+
+        self.read_access(addr)
     }
 
     fn write(&mut self, addr: u16, data: u8) {
@@ -487,9 +528,13 @@ impl BusInterface for MainBus {
                     self.apu.fill_sample(byte);
                 }
             }
-            0x4016 => self.joypad1.cpu_write(data),
-            0x4017 => {
+            0x4016 => {
+                // The strobe line is shared by both controller ports.
+                self.joypad1.cpu_write(data);
                 self.joypad2.cpu_write(data);
+            }
+            0x4017 => {
+                // $4017 is the APU frame counter, not a controller port.
                 let _ = self.apu.write_register(0x4017, data);
             }
             // Extended audio registers ($5000-$5FFF) — route to mapper for VRC6/MMC5
@@ -507,6 +552,9 @@ impl BusInterface for MainBus {
                 // CHR banks may have changed mid-frame.
                 self.refresh_chr();
                 self.sync_mirroring();
+                // An MMC3 acknowledge ($E000/$E001) must drop the IRQ line in
+                // the same instruction that wrote it.
+                self.ppu.mapper_irq = self.mapper.irq_line();
             }
             _ => {}
         }
@@ -580,3 +628,61 @@ impl BusInterface for MainBus {
 #[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/bus_tests.rs"]
 mod tests;
+
+impl MainBus {
+    fn read_access(&mut self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => {
+                let val = self.ram.read(addr);
+                self.open_bus_latch = val;
+                val
+            }
+            0x2000..=0x3FFF => {
+                let reg = addr & 0x0007;
+                let val = self.ppu.cpu_read(reg);
+                if reg == 2 {
+                    // Reading $2002 clears the VBL flag. If the NMI edge was
+                    // seen in this very CPU cycle it has not been committed
+                    // yet, so the read cancels it; an edge that was already
+                    // visible at the previous boundary still fires.
+                    self.nmi_line = self.ppu.nmi_interrupt;
+                    if self.nmi_edge_seen && !self.nmi_edge_seen_prev {
+                        self.nmi_edge_seen = false;
+                    }
+                }
+                self.open_bus_latch = val;
+                val
+            }
+            0x4014 => {
+                // OAMDMA write-only — read returns open bus.
+                self.open_bus_latch
+            }
+            0x4015 => {
+                let val = self.apu.read_status();
+                self.open_bus_latch = val;
+                val
+            }
+            0x4016 => {
+                // bit0 = controller data; bits 1-7 = open bus
+                let joy_val = self.joypad1.cpu_read();
+                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
+                self.open_bus_latch = val;
+                val
+            }
+            0x4017 => {
+                // bit0 = controller data; bits 1-7 = open bus
+                let joy_val = self.joypad2.cpu_read();
+                let val = (self.open_bus_latch & 0xFE) | (joy_val & 0x01);
+                self.open_bus_latch = val;
+                val
+            }
+            0x6000..=0xFFFF => {
+                let val = self.mapper.read_prg(addr);
+                self.open_bus_latch = val;
+                val
+            }
+            // $4000-$4013 (write-only APU), $4018-$5FFF (unmapped) → open bus
+            _ => self.open_bus_latch,
+        }
+    }
+}

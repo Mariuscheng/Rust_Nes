@@ -56,6 +56,9 @@ impl PPU {
             }
 
             self.rendering_enabled = (self.mask & 0x18) != 0;
+            // The address bus (and therefore the MMC3's A12 input) changes on
+            // every dot, including the idle ones.
+            self.tick_a12();
             #[cfg(all(test, feature = "local_harness"))]
             if self.cycle == 1 && self.scanline < 40 {
                 self.row_x[self.scanline as usize] = self.x;
@@ -121,9 +124,6 @@ impl PPU {
         let is_visible = self.scanline < 240;
         let is_pre_render = self.scanline == 261;
 
-        // ── A12 rising edge detection (for MMC3 IRQ) ──
-        self.compute_a12_rising();
-
         // ── OAM evaluation (cycles 1-256) ──
         if is_visible || is_pre_render {
             self.oam_evaluate();
@@ -166,29 +166,49 @@ impl PPU {
         }
     }
 
-    // ── A12 rising edge detection (MMC3 IRQ) ──
-    fn compute_a12_rising(&mut self) {
+    // ── A12 tracking (MMC3 IRQ clock) ──
+
+    /// Advances address-bus bit 12 for the dot about to run.
+    ///
+    /// The MMC3 counts A12 rising edges, so "one clock per scanline" is really
+    /// a consequence of where the bus points: the eight sprite pattern fetches
+    /// in hblank produce eight edges, but the cartridge's low-pass filter
+    /// (three M2 cycles) keeps only the first because the gaps between them are
+    /// four dots. The old model instead guessed from the pattern-table bits and
+    /// assumed the whole sprite phase was high, which is why the MMC3 IRQ tests
+    /// failed.
+    fn tick_a12(&mut self) {
         let cycle = self.cycle;
-        if !self.rendering_enabled {
+        let render_line = self.scanline < 240 || self.scanline == 261;
+        if !(self.rendering_enabled && render_line) {
+            // Forced blank and vblank: the bus holds the CPU's last VRAM address.
+            self.hold_a12();
             return;
         }
 
-        let current_a12 = if (1..=256).contains(&cycle) {
-            let sub = cycle % 8;
-            (sub == 5 || sub == 7) && self.ctrl.background_pattern_addr != 0
+        if (1..=256).contains(&cycle) || (321..=336).contains(&cycle) {
+            // BG fetch group: nametable and attribute reads live at $2xxx (A12
+            // low); the two pattern fetches sit in the table selected by $2000
+            // bit 4. Dots between reads hold the previous address.
+            match cycle % 8 {
+                5 | 7 => {
+                    let high = self.ctrl.background_pattern_addr != 0;
+                    self.drive_a12(high);
+                }
+                _ => self.hold_a12(),
+            }
         } else if (257..=320).contains(&cycle) {
-            true // conservative: assume A12 can be high during sprite fetches
-        } else if (321..=340).contains(&cycle) {
-            let sub = cycle % 8;
-            (sub == 5 || sub == 7) && self.ctrl.background_pattern_addr != 0
+            // Eight sprite slots of eight dots: NT, NT, AT, AT, PT-low,
+            // PT-low, PT-high, PT-high. The pattern table comes from $2000
+            // bit 3.
+            let high = (cycle - 257) % 8 >= 4 && self.ctrl.sprite_pattern_addr != 0;
+            self.drive_a12(high);
+        } else if (337..=340).contains(&cycle) {
+            // Two dummy nametable fetches close the scanline.
+            self.drive_a12(false);
         } else {
-            false
-        };
-
-        if current_a12 && !self.prev_a12 {
-            self.a12_rising_count = self.a12_rising_count.saturating_add(1);
+            self.hold_a12();
         }
-        self.prev_a12 = current_a12;
     }
 
     // ── Background tile fetching ──

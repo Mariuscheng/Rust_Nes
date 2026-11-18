@@ -2,17 +2,6 @@
 
 use super::Mirroring;
 
-// ── Helper functions ──
-
-pub(super) fn write_u8_vec(v: &mut Vec<u8>, val: u8) {
-    v.push(val);
-}
-pub(super) fn read_u8_slice(data: &[u8], off: &mut usize) -> u8 {
-    let v = data[*off];
-    *off += 1;
-    v
-}
-
 // ── Mapper trait ──
 
 pub trait Mapper {
@@ -28,6 +17,17 @@ pub trait Mapper {
     fn mirroring(&self) -> Option<Mirroring> {
         None
     }
+
+    /// Restore the mapper's power-on register state.
+    ///
+    /// Hardware has no generic answer here: some mappers reset their registers,
+    /// others keep them (or reset only part of them). Only the mappers whose
+    /// state is actually observable across a console reset — MMC1's shift
+    /// register and control value, MMC3's IRQ — override this; for everything
+    /// else a game rewrites its bank registers at the start of its reset
+    /// handler and leaves this alone.
+    fn reset(&mut self) {}
+
     /// Battery-backed PRG RAM, if this cartridge has one. `Cartridge` uses it
     /// to load `<rom>.sav` at boot and write it back on exit.
     fn battery_ram(&self) -> Option<&[u8]> {
@@ -37,9 +37,18 @@ pub trait Mapper {
     fn battery_ram_mut(&mut self) -> Option<&mut [u8]> {
         None
     }
-    /// MMC3 IRQ tick: called by PPU on A12 rising edge (PPU cycle 256 end).
-    /// Returns true if IRQ should be triggered.
+    /// Clock the mapper's IRQ counter once. The PPU calls this for every
+    /// accepted A12 rising edge; VRC6/FME-7 reuse the same hook.
+    ///
+    /// Returns the IRQ line level after the clock, so a mapper that latches a
+    /// pending IRQ (MMC3) keeps the line asserted until the game acknowledges.
     fn tick_mapper_irq(&mut self) -> bool {
+        false
+    }
+    /// Current IRQ line level without clocking anything. The bus polls this
+    /// after register writes so an acknowledge ($E000/$E001) drops the line in
+    /// the same instruction.
+    fn irq_line(&self) -> bool {
         false
     }
     /// 自上次呼叫以來，哪些 1 KiB CHR bank（bit i = $0000 + i*$400）的內容可能改變。
@@ -55,7 +64,9 @@ pub trait Mapper {
         Vec::new()
     }
     /// Restore mapper-specific state from bytes.
-    fn load_state(&mut self, _data: &[u8]) {}
+    fn load_state(&mut self, _data: &[u8]) -> Option<()> {
+        Some(())
+    }
 
     // ── Extended audio (VRC6, MMC5, FME-7, etc.) ──
     /// Write to the mapper's extended audio registers ($5xxx or specific address ranges).

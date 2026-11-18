@@ -38,103 +38,105 @@ impl PPU {
             }
             if cycle == 64 {
                 // Reset evaluation state
-                self.oam_eval_n = 0;
+                self.oam_eval_addr = 0;
                 self.oam_eval_m = 0;
-                self.oam_eval_byte = 0;
-                self.oam_eval_reading = true;
-                self.oam_eval_overflow = false;
+                self.oam_eval_phase = 0;
                 self.sprite_count_next = 0;
                 self.sprite_zero_next = false;
             }
         }
 
-        // Cycles 65-256: Read and evaluate sprites
-        if (65..=256).contains(&cycle) {
-            let is_read_cycle = !cycle.is_multiple_of(2); // odd = read OAM, even = write sec OAM
-
-            if is_read_cycle {
-                // ── Odd cycle: read from primary OAM ──
-                if self.oam_eval_byte == 0 {
-                    // Reading sprite Y
-                    let oam_idx = (self.oam_eval_n as usize) * 4;
-                    if oam_idx < 256 {
-                        self.oam_eval_sprite_buf[0] = self.oam[oam_idx];
-                    }
-
-                    // Check if sprite is in range for next scanline
-                    let sprite_y = self.oam_eval_sprite_buf[0] as u16;
-                    let next_scanline = if self.scanline == 261 {
-                        0u16
-                    } else {
-                        self.scanline + 1
-                    };
-                    let sprite_h = if self.ctrl.sprite_size { 16 } else { 8 } as u16;
-                    // OAM stores the sprite's top line minus one, so a sprite
-                    // with Y = 24 covers scanlines 25..32.
-                    let top = sprite_y + 1;
-                    let in_range = next_scanline >= top && next_scanline < top + sprite_h;
-
-                    if in_range {
-                        self.oam_eval_byte = 1; // next: write Y on even, then read tile_id on next odd
-                        self.oam_eval_reading = true;
-                    } else {
-                        self.oam_eval_n = self.oam_eval_n.wrapping_add(1);
-                        if self.oam_eval_n >= 64 {
-                            self.oam_eval_n = 0;
-                        }
-                        // byte stays 0
-                    }
-                } else if self.oam_eval_byte >= 1 && self.oam_eval_byte <= 3 {
-                    // Read byte at offset oam_eval_byte (1=tile_id, 2=attr, 3=X)
-                    let oam_idx = (self.oam_eval_n as usize) * 4 + self.oam_eval_byte as usize;
-                    if oam_idx < 256 {
-                        self.oam_eval_sprite_buf[self.oam_eval_byte as usize] = self.oam[oam_idx];
-                    }
-                    // Advance to next byte AFTER reading
-                    self.oam_eval_byte += 1;
-                }
-                // byte == 4 on odd: nothing to read (all 4 bytes already fetched)
-            } else {
-                // ── Even cycle: write previously-read byte to secondary OAM ──
-                // Write at oam_eval_byte - 1 (the byte we read on the previous odd cycle)
-                if self.oam_eval_byte >= 1 && self.oam_eval_byte <= 4 {
-                    if self.oam_eval_m < 8 {
-                        let sec_idx =
-                            (self.oam_eval_m as usize) * 4 + (self.oam_eval_byte - 1) as usize;
-                        if sec_idx < 32 {
-                            self.sec_oam[sec_idx] =
-                                self.oam_eval_sprite_buf[(self.oam_eval_byte - 1) as usize];
-                        }
-                    }
-                    if self.oam_eval_byte == 4 {
-                        // Finished writing all 4 bytes (Y,tile,attr,X)
-                        if self.oam_eval_n == 0 {
-                            self.sprite_zero_next = true;
-                        }
-                        if self.oam_eval_m < 8 {
-                            self.oam_eval_m += 1;
-                            self.sprite_count_next = self.oam_eval_m;
-                        } else {
-                            self.oam_eval_overflow = true;
-                        }
-                        self.oam_eval_n = self.oam_eval_n.wrapping_add(1);
-                        if self.oam_eval_n >= 64 {
-                            self.oam_eval_n = 0;
-                        }
-                        self.oam_eval_byte = 0;
-                    }
-                }
-            }
-        }
-
-        // Set overflow at end of evaluation
-        if cycle == 256 && self.oam_eval_overflow {
-            self.status.sprite_overflow = true;
+        // Cycles 65-256: read one OAM byte every two dots. The write half of
+        // the pair is folded into the read: only the overflow flag's timing
+        // depends on the dot, and that is driven by the read.
+        if (65..=256).contains(&cycle) && !cycle.is_multiple_of(2) {
+            self.oam_eval_read_byte();
         }
 
         // At end of scanline (cycle 340), initialize sprites for NEXT scanline
         if cycle == 340 {
             self.init_sprites_for_next_scanline();
+        }
+    }
+
+    /// True when a sprite whose OAM Y byte is `y` covers the next scanline.
+    ///
+    /// OAM stores the sprite's top line minus one, so Y = 24 covers scanlines
+    /// 25..32 (or 25..40 for 8x16 sprites).
+    fn sprite_covers_next_line(&self, y: u8) -> bool {
+        let next_line = if self.scanline == 261 {
+            0u16
+        } else {
+            self.scanline + 1
+        };
+        let height: u16 = if self.ctrl.sprite_size { 16 } else { 8 };
+        let top = y as u16 + 1;
+        next_line >= top && next_line < top + height
+    }
+
+    /// Reads the byte at the evaluator's current OAM address and advances.
+    ///
+    /// The hardware walks OAM four bytes at a time. When an in-range sprite is
+    /// found its four bytes are copied to secondary OAM; otherwise the rest of
+    /// the sprite is skipped. Once eight sprites are queued the copy stops and
+    /// the flag is latched on the *next* in-range Y, but the byte phase is no
+    /// longer reset, so the tile/attribute/X bytes of later sprites get read as
+    /// Y coordinates (blargg `4.Obscure`).
+    fn oam_eval_read_byte(&mut self) {
+        let address = self.oam_eval_addr + self.oam_eval_phase as u16;
+        if address >= 256 {
+            return; // past the last sprite: hardware stops scanning, never wraps
+        }
+        let byte = self.oam[address as usize];
+
+        if self.oam_eval_m >= 8 {
+            // All eight slots are full. Hardware keeps scanning, but it stops
+            // resetting the byte phase, so the tile/attribute/X bytes of later
+            // sprites get compared as Y coordinates (blargg `4.Obscure`). The
+            // search ends at the first match.
+            if self.sprite_covers_next_line(byte) {
+                self.status.sprite_overflow = true;
+                self.oam_eval_addr = 256;
+            } else {
+                self.oam_eval_addr += 4;
+                self.oam_eval_phase = (self.oam_eval_phase + 1) & 3;
+            }
+            return;
+        }
+
+        if self.oam_eval_phase == 0 {
+            if self.sprite_covers_next_line(byte) {
+                self.oam_eval_sprite_write(0, byte);
+                self.oam_eval_phase = 1;
+            } else {
+                // Skip the rest of the sprite.
+                self.oam_eval_addr += 4;
+            }
+            return;
+        }
+
+        // Tile, attribute and X bytes of a sprite that is being copied.
+        self.oam_eval_sprite_write(self.oam_eval_phase, byte);
+        self.oam_eval_phase += 1;
+        if self.oam_eval_phase == 4 {
+            if self.oam_eval_addr == 0 {
+                self.sprite_zero_next = true;
+            }
+            self.oam_eval_m += 1;
+            self.sprite_count_next = self.oam_eval_m;
+            self.oam_eval_addr += 4;
+            self.oam_eval_phase = 0;
+        }
+    }
+
+    /// Copies one byte of the current sprite into secondary OAM.
+    fn oam_eval_sprite_write(&mut self, phase: u8, byte: u8) {
+        if self.oam_eval_m >= 8 {
+            return;
+        }
+        let index = self.oam_eval_m as usize * 4 + phase as usize;
+        if index < 32 {
+            self.sec_oam[index] = byte;
         }
     }
 

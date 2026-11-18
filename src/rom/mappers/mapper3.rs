@@ -47,10 +47,8 @@ impl Mapper for Mapper3 {
         vec![self.chr_bank]
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-        self.chr_bank = data[0];
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        self.chr_bank = *data.first()?;
+        Some(())
     }
 }

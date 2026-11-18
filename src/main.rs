@@ -4,10 +4,10 @@
 //! keyboard input, and drives `NesConsole::step_frame`. Everything below
 //! `nes.rs` is platform-independent and only talks through the bus.
 
-// Hardware acronyms (CPU/PPU/APU, OAM/CHR/PRG) and the 6502 mnemonics (LDA,
-// SEI, ...) are the domain vocabulary; renaming them to CamelCase would make
-// the code harder to match against the NESdev references.
-#![allow(clippy::upper_case_acronyms)]
+#![expect(
+    clippy::upper_case_acronyms,
+    reason = "CPU/PPU/APU/OAM/CHR/PRG and the 6502 mnemonics are the NESdev vocabulary; CamelCase would break the match with the references"
+)]
 
 mod apu;
 mod audio;
@@ -20,18 +20,25 @@ mod nes;
 mod ppu;
 mod ram;
 mod rom;
+mod state;
 
 // ── Local-only test modules (live in `testing/`, which is not published) ──
-#[cfg(all(test, feature = "local_harness"))]
+#[cfg(test)]
+#[cfg(feature = "local_harness")]
 #[path = "../testing/mod.rs"]
 mod tests;
+
+/// Tests that only use the public API, so they also run in a checkout without
+/// the local harness (`testing/` is gitignored and absent from CI).
+#[cfg(test)]
+mod state_tests;
 
 use audio::AudioOut;
 use cartridge::Cartridge;
 use joypad::Button;
 use minifb::{Key, Window, WindowOptions};
 use nes::NesConsole;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,7 +58,10 @@ fn main() {
     // Present the window in physical pixels: without this the OS stretches a
     // non-DPI-aware window, which smears the first scanline into a pale line.
     #[cfg(windows)]
-    enable_dpi_awareness();
+    {
+        enable_dpi_awareness();
+        raise_timer_resolution();
+    }
 
     // ── 1. Load ROM via Cartridge (black box input) ──
     let cart =
@@ -82,8 +92,20 @@ fn run_headless(console: &mut NesConsole, max_frames: u64) {
     );
 }
 
+/// One NTSC NES frame: 89342 PPU dots ÷ 3 dots per CPU cycle = 29780.67 CPU
+/// cycles at 1.7897725 MHz, i.e. 16.639 ms (60.0988 Hz — not exactly 60).
+const NES_FRAME_TIME: Duration = Duration::from_nanos(16_639_280);
+/// Per-frame pacing correction used to steer the audio queue (±0.24 %).
+const FRAME_ADJUST: Duration = Duration::from_micros(40);
+/// Clamp so drift correction never becomes visible as a speed change.
+const MIN_FRAME_TIME: Duration = Duration::from_micros(16_200);
+const MAX_FRAME_TIME: Duration = Duration::from_micros(17_100);
+/// How much of the wait is spent spinning instead of sleeping; `thread::sleep`
+/// alone is quantized to the system timer (~1–16 ms).
+const SPIN_WINDOW: Duration = Duration::from_millis(2);
+
 fn run_with_window(console: &mut NesConsole) {
-    let mut frame_buf = [0u32; 256 * 240];
+    let mut frame_buf = vec![0u32; 256 * 240];
 
     // Integer nearest-neighbour upscale. The window is created at exactly the
     // scaled size, so neither minifb nor the OS resamples the image (resampling
@@ -103,6 +125,14 @@ fn run_with_window(console: &mut NesConsole) {
 
     let audio_out = AudioOut::new(44100);
     let mut last_battery_save = Instant::now();
+    let mut reset_held = false;
+
+    // Frame pacing: one loop iteration = one NES frame, so the loop must be
+    // limited to the NES frame rate. Without an explicit limit the loop free-runs
+    // and then blocks on the audio queue, which made frame intervals alternate
+    // between a few milliseconds and ~20 ms (visible stutter).
+    let mut frame_time = NES_FRAME_TIME;
+    let mut next_frame = Instant::now();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         poll_input(console, &window);
@@ -123,7 +153,9 @@ fn run_with_window(console: &mut NesConsole) {
                 *px = src_row[x / SCALE];
             }
         }
-        window.update_with_buffer(&scaled, WIN_W, WIN_H).unwrap();
+        if window.update_with_buffer(&scaled, WIN_W, WIN_H).is_err() {
+            break;
+        }
 
         // ── Save state hotkeys ──
         if window.is_key_down(Key::F5) {
@@ -132,6 +164,14 @@ fn run_with_window(console: &mut NesConsole) {
         if window.is_key_down(Key::F7) {
             console.load_state("savestate.dat");
         }
+        // F2 = hardware reset (like the front-panel button): RAM survives, so
+        // games can warm-boot instead of losing their save-in-progress.
+        // Edge-detected so holding the key does not reset every frame.
+        let reset_down = window.is_key_down(Key::F2);
+        if reset_down && !reset_held {
+            console.reset();
+        }
+        reset_held = reset_down;
 
         // Autosave battery-backed cartridge RAM so a crash or force-quit only
         // loses the last 30 seconds.
@@ -139,10 +179,69 @@ fn run_with_window(console: &mut NesConsole) {
             console.save_battery();
             last_battery_save = Instant::now();
         }
+
+        // ── Pace the next frame ──
+        // Audio is the clock. The correction is far below one frame (±40 µs),
+        // so drift between the emulator's nominal 44100 Hz and the device's
+        // real rate is absorbed without changing game speed.
+        let queued = audio_out.queued_frames();
+        if queued < AudioOut::TARGET_QUEUED_FRAMES {
+            frame_time = frame_time.saturating_sub(FRAME_ADJUST).max(MIN_FRAME_TIME);
+        } else if queued > AudioOut::TARGET_QUEUED_FRAMES {
+            frame_time = (frame_time + FRAME_ADJUST).min(MAX_FRAME_TIME);
+        }
+        next_frame += frame_time;
+        let now = Instant::now();
+        if next_frame < now {
+            // Fell behind (window drag, breakpoint, ...): resync instead of
+            // presenting a burst of frames to catch up.
+            next_frame = now + Duration::from_millis(1);
+        }
+        wait_until(next_frame);
     }
 
     // Persist battery-backed cartridge RAM (if any) next to the ROM.
     console.save_battery();
+}
+
+/// Sleep until `deadline`, spinning the final [`SPIN_WINDOW`].
+///
+/// `thread::sleep` is quantized to the system timer (1 ms after
+/// `timeBeginPeriod(1)`, ~15.6 ms otherwise), which is coarser than the jitter
+/// that is visible as stutter; the spin covers the tail so each frame lands
+/// within a few hundred microseconds of its deadline.
+fn wait_until(deadline: Instant) {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        let remain = deadline.saturating_duration_since(now);
+        if remain > SPIN_WINDOW {
+            std::thread::sleep(remain.saturating_sub(SPIN_WINDOW));
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+/// Ask the Windows timer for 1 ms resolution.
+///
+/// Without it `Sleep` is quantized to the ~15.6 ms system tick, which is longer
+/// than one NES frame. The audio stack normally requests this too, but the
+/// frame pacer should not depend on that.
+#[cfg(windows)]
+fn raise_timer_resolution() {
+    #[link(name = "winmm")]
+    unsafe extern "system" {
+        fn timeBeginPeriod(period: u32) -> u32;
+    }
+    // SAFETY: `timeBeginPeriod` is a plain Win32 call with no pointer arguments
+    // and no preconditions beyond a valid period; it is safe from any thread and
+    // the returned status is discarded.
+    unsafe {
+        let _ = timeBeginPeriod(1);
+    }
 }
 
 /// Opt into per-monitor DPI awareness so the window is blitted 1:1 instead of
@@ -154,7 +253,9 @@ fn enable_dpi_awareness() {
     unsafe extern "system" {
         fn SetProcessDpiAwarenessContext(value: isize) -> i32;
     }
-    // Fails harmlessly on builds that predate this API.
+    // SAFETY: the function only reads an integer context value and returns a
+    // status code; a failure (older Windows) leaves DPI awareness unchanged,
+    // which the rest of the code already tolerates.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2);
     }

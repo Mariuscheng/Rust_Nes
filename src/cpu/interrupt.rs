@@ -16,11 +16,34 @@ use crate::constants::{
 };
 
 impl CPU {
-    /// Power-on / reset: jump through the reset vector.
+    /// Power-on / reset: the 7-cycle reset sequence.
+    ///
+    /// Unlike NMI/IRQ this pushes nothing. It reads `PC`, `PC+1` and then the
+    /// three stack addresses `$0100|S`, `|S-1`, `|S-2` as *reads* (the 6502
+    /// drives those addresses while it decrements S), decrements S by three,
+    /// sets I, and finally fetches the reset vector. A, X, Y, the decimal flag
+    /// and the previous stack contents are left alone, which is what lets a
+    /// game distinguish a reset from a cold boot.
     pub fn reset(&mut self, bus: &mut impl CpuBus) {
+        // c1-c2: dummy reads of the (stale) program counter.
+        let _ = bus.read(self.pc);
+        let _ = bus.read(self.pc.wrapping_add(1));
+
+        // c3-c5: S is decremented three times, with a read at each address.
+        for _ in 0..3 {
+            let _ = bus.read(0x0100 | self.sp as u16);
+            self.sp = self.sp.wrapping_sub(1);
+        }
+
+        // c6-c7: vector fetch.
         let lo = bus.read(RESET_VECTOR_LO) as u16;
         let hi = bus.read(RESET_VECTOR_HI) as u16;
         self.pc = (hi << 8) | lo;
+
+        self.p |= 0x04;
+        self.poll_iflag = true;
+        self.poll_delay = 0;
+        self.nmi_polled = false;
     }
 
     /// Whether the poll at the end of the current instruction takes an IRQ.

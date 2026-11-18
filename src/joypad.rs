@@ -20,6 +20,10 @@ pub struct Joypad {
     state: u8, // 當前按鍵狀態（即時更新）
     shift: u8, // latch 後的序列移位暫存器
     strobe: bool,
+    /// Bits already shifted out since the last latch. Once the eight buttons
+    /// have been read the data line floats high, so further reads return 1;
+    /// `dmc_dma_during_read4/dma_4016_read` counts on exactly that.
+    bits_read: u8,
 }
 
 impl Joypad {
@@ -28,6 +32,7 @@ impl Joypad {
             state: 0,
             shift: 0,
             strobe: false,
+            bits_read: 0,
         }
     }
 
@@ -63,15 +68,22 @@ impl Joypad {
         self.strobe = (value & 1) != 0;
         if self.strobe {
             self.shift = self.state; // 立即 latch
+            self.bits_read = 0;
         }
     }
 
     /// CPU 讀取 $4016/$4017（回傳 bit0，每次讀取後右移）
     pub fn cpu_read(&mut self) -> u8 {
-        let res = self.shift & 1;
-        if !self.strobe {
-            self.shift >>= 1;
+        if self.strobe {
+            return self.shift & 1;
         }
+        if self.bits_read >= 8 {
+            // The shift register has run out; the data line idles high.
+            return 1;
+        }
+        let res = self.shift & 1;
+        self.shift >>= 1;
+        self.bits_read += 1;
         res
     }
 }

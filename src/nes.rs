@@ -10,6 +10,7 @@ use crate::cpu::CPU;
 use crate::joypad::{Button, Joypad};
 use crate::ppu::PPU;
 use crate::ram::Ram;
+use crate::state::{Reader, Writer};
 use std::fs;
 use std::path::PathBuf;
 
@@ -44,6 +45,10 @@ impl NesConsole {
 
         let mut cpu = CPU::new();
         cpu.reset(&mut bus);
+        // The reset sequence advanced the machine by seven cycles; set the
+        // frame counter up as if `$4017` was written 9-12 cycles before the
+        // first instruction (blargg 09.reset_timing).
+        bus.power_on_apu();
 
         let last_ppu_frame = bus.ppu_frame();
 
@@ -53,6 +58,29 @@ impl NesConsole {
             last_ppu_frame,
             battery_path,
         }
+    }
+
+    /// Perform a hardware reset (`/RESET`), as the front-panel button does.
+    ///
+    /// The PPU and APU registers go back to their power-on values and the CPU
+    /// runs its 7-cycle reset sequence, but everything a battery or the old
+    /// program could have left behind survives: the 2 KB of work RAM, PRG RAM,
+    /// VRAM, palette RAM, OAM, CHR data and the write-only APU/mapper
+    /// registers. A game can therefore detect a warm boot and reuse its RAM, a
+    /// multicart can return to its menu, and a front-end hotkey can offer
+    /// "reset" next to "power cycle".
+    ///
+    /// Not reset either: the frame/scanline counters (the PPU keeps
+    /// free-running) or the audio buffer already queued for the host.
+    pub fn reset(&mut self) {
+        self.bus.reset_peripherals();
+        self.cpu.reset(&mut self.bus);
+        // Hardware replays the last `$4017` value and lets the counter run for
+        // the same 9 clocks as power-up before the first instruction.
+        self.bus.rearm_apu_frame_counter();
+        // The PPU was not restarted, so move the frame baseline with it;
+        // otherwise the next `step_frame` would return immediately.
+        self.last_ppu_frame = self.bus.ppu_frame();
     }
 
     /// Write battery-backed PRG RAM back to the cartridge's `<rom>.sav`.
@@ -74,7 +102,7 @@ impl NesConsole {
     }
 
     /// Copy the PPU frame buffer (256×240) into `buf`.
-    pub fn read_frame_buffer(&self, buf: &mut [u32; 256 * 240]) {
+    pub fn read_frame_buffer(&self, buf: &mut [u32]) {
         self.bus.read_frame_buffer(buf);
     }
 
@@ -155,164 +183,108 @@ impl NesConsole {
     // ════════════════════════════════════════════════════
 
     pub fn save_state(&self, path: &str) {
-        let mut data = Vec::new();
-        data.push(0x03);
+        let mut out = Writer::new();
+        out.u8(0x04);
 
-        // CPU
-        data.extend_from_slice(&self.cpu.a.to_le_bytes());
-        data.extend_from_slice(&self.cpu.x.to_le_bytes());
-        data.extend_from_slice(&self.cpu.y.to_le_bytes());
-        data.extend_from_slice(&self.cpu.pc.to_le_bytes());
-        data.push(self.cpu.sp);
-        data.push(self.cpu.as_u8());
+        out.u8(self.cpu.a);
+        out.u8(self.cpu.x);
+        out.u8(self.cpu.y);
+        out.u16(self.cpu.pc);
+        out.u8(self.cpu.sp);
+        out.u8(self.cpu.as_u8());
 
-        // PPU
-        let ppu_snap = self.bus.ppu_save_state();
-        data.extend_from_slice(&ppu_snap.v.to_le_bytes());
-        data.extend_from_slice(&ppu_snap.t.to_le_bytes());
-        data.push(ppu_snap.x);
-        data.push(if ppu_snap.w { 1 } else { 0 });
-        data.extend_from_slice(&ppu_snap.scanline.to_le_bytes());
-        data.extend_from_slice(&ppu_snap.cycle.to_le_bytes());
-        data.extend_from_slice(&ppu_snap.frame.to_le_bytes());
-        data.push(if ppu_snap.odd_frame { 1 } else { 0 });
-        data.push(ppu_snap.read_buffer);
-        data.push(ppu_snap.oam_addr);
-        data.extend_from_slice(&ppu_snap.oam);
-        data.extend_from_slice(&ppu_snap.vram);
-        data.extend_from_slice(&ppu_snap.palette);
-        data.extend_from_slice(&ppu_snap.chr_ram);
+        let ppu = self.bus.ppu_save_state();
+        out.u16(ppu.v);
+        out.u16(ppu.t);
+        out.u8(ppu.x);
+        out.bool(ppu.w);
+        out.u16(ppu.scanline);
+        out.u16(ppu.cycle);
+        out.u64(ppu.frame);
+        out.bool(ppu.odd_frame);
+        out.u8(ppu.read_buffer);
+        out.u8(ppu.oam_addr);
+        out.bytes(&ppu.oam);
+        out.bytes(&ppu.vram);
+        out.bytes(&ppu.palette);
+        out.bytes(&ppu.chr_ram);
+        out.u8(ppu.ctrl);
+        out.u8(ppu.status);
+        out.u8(ppu.mask);
 
-        // RAM, Mapper, APU
-        data.extend_from_slice(self.bus.ram_data());
+        out.bytes(self.bus.ram_data());
+        out.len_prefixed(&self.bus.mapper_save_state());
+        out.len_prefixed(&self.bus.apu_save_state());
 
-        let mapper_bytes = self.bus.mapper_save_state();
-        data.extend_from_slice(&(mapper_bytes.len() as u32).to_le_bytes());
-        data.extend_from_slice(&mapper_bytes);
-
-        let apu_bytes = self.bus.apu_save_state();
-        data.extend_from_slice(&(apu_bytes.len() as u32).to_le_bytes());
-        data.extend_from_slice(&apu_bytes);
-
-        let _ = fs::write(path, &data);
+        let _ = fs::write(path, out.finish());
     }
 
     pub fn load_state(&mut self, path: &str) {
-        let data = match fs::read(path) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        if data.len() < 2 {
+        let Ok(data) = fs::read(path) else {
             return;
-        }
-        let version = data[0];
-        if version > 0x03 {
-            return;
-        }
-        let mut offset = 1usize;
-        let rd = |d: &[u8], o: &mut usize| -> u8 {
-            let v = d[*o];
-            *o += 1;
-            v
         };
-        let rd16 = |d: &[u8], o: &mut usize| -> u16 {
-            let v = u16::from_le_bytes([d[*o], d[*o + 1]]);
-            *o += 2;
-            v
-        };
-        let rd64 = |d: &[u8], o: &mut usize| -> u64 {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&d[*o..*o + 8]);
-            *o += 8;
-            u64::from_le_bytes(bytes)
-        };
+        let _ = self.apply_state(&data);
+    }
 
-        self.cpu.a = rd(&data, &mut offset);
-        self.cpu.x = rd(&data, &mut offset);
-        self.cpu.y = rd(&data, &mut offset);
-        self.cpu.pc = rd16(&data, &mut offset);
-        self.cpu.sp = rd(&data, &mut offset);
-        self.cpu.p = rd(&data, &mut offset);
+    fn apply_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        let version = reader.u8()?;
+        if version > 0x04 {
+            return None;
+        }
 
-        let ppu_snap = PpuSnapshot {
-            v: rd16(&data, &mut offset),
-            t: rd16(&data, &mut offset),
-            x: rd(&data, &mut offset),
-            w: rd(&data, &mut offset) != 0,
-            scanline: rd16(&data, &mut offset),
-            cycle: rd16(&data, &mut offset),
-            frame: rd64(&data, &mut offset),
-            odd_frame: rd(&data, &mut offset) != 0,
-            read_buffer: rd(&data, &mut offset),
-            oam_addr: rd(&data, &mut offset),
-            oam: {
-                let mut arr = [0u8; 256];
-                arr.copy_from_slice(&data[offset..offset + 256]);
-                offset += 256;
-                arr
-            },
-            vram: {
-                let mut arr = [0u8; 2048];
-                arr.copy_from_slice(&data[offset..offset + 2048]);
-                offset += 2048;
-                arr
-            },
-            palette: {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&data[offset..offset + 32]);
-                offset += 32;
-                arr
-            },
-            chr_ram: {
-                let mut arr = [0u8; 8192];
-                arr.copy_from_slice(&data[offset..offset + 8192]);
-                offset += 8192;
-                arr
-            },
+        self.cpu.a = reader.u8()?;
+        self.cpu.x = reader.u8()?;
+        self.cpu.y = reader.u8()?;
+        self.cpu.pc = reader.u16()?;
+        self.cpu.sp = reader.u8()?;
+        self.cpu.p = reader.u8()?;
+
+        let mut ppu = PpuSnapshot {
+            v: reader.u16()?,
+            t: reader.u16()?,
+            x: reader.u8()?,
+            w: reader.bool()?,
+            scanline: reader.u16()?,
+            cycle: reader.u16()?,
+            frame: reader.u64()?,
+            odd_frame: reader.bool()?,
+            read_buffer: reader.u8()?,
+            oam_addr: reader.u8()?,
+            oam: reader.array()?,
+            vram: reader.array()?,
+            palette: reader.array()?,
+            chr_ram: reader.array()?,
+            ctrl: 0,
+            status: 0,
+            mask: 0,
+            has_registers: version >= 0x04,
         };
-        self.bus.ppu_load_state(&ppu_snap);
+        if ppu.has_registers {
+            ppu.ctrl = reader.u8()?;
+            ppu.status = reader.u8()?;
+            ppu.mask = reader.u8()?;
+        }
+        self.bus.ppu_load_state(&ppu);
 
         if version == 0x01 {
-            return;
+            return Some(());
         }
 
-        self.bus.write_ram_raw(&data[offset..offset + 2048]);
-        offset += 2048;
+        let ram = reader.array::<2048>()?;
+        self.bus.write_ram_raw(&ram);
 
-        // v0x02 wrote 8192 bytes of dead WRAM here — skip for backwards compat
         if version == 0x02 {
-            offset += 8192;
+            reader.skip(8192)?;
         }
 
-        let mapper_len = {
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]);
-            offset += 4;
-            len as usize
-        };
-        if mapper_len > 0 && offset + mapper_len <= data.len() {
-            self.bus
-                .mapper_load_state(&data[offset..offset + mapper_len]);
-            offset += mapper_len;
+        let mapper = reader.len_prefixed()?;
+        if !mapper.is_empty() {
+            self.bus.mapper_load_state(mapper);
         }
-
-        let apu_len = {
-            let len = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]);
-            offset += 4;
-            len as usize
-        };
-        if apu_len > 0 && offset + apu_len <= data.len() {
-            self.bus.apu_load_state(&data[offset..offset + apu_len]);
-        }
+        let apu = reader.len_prefixed()?;
+        self.bus.apu_load_state(apu);
+        Some(())
     }
 }
 
@@ -322,3 +294,7 @@ impl NesConsole {
 #[cfg(all(test, feature = "local_harness"))]
 #[path = "../testing/rom_tests.rs"]
 mod rom_tests;
+
+#[cfg(all(test, feature = "local_harness"))]
+#[path = "../testing/reset_tests.rs"]
+mod reset_tests;

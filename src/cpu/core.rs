@@ -52,7 +52,9 @@ impl CPU {
             x: 0,
             y: 0,
             pc: 0,
-            sp: 0xFD,
+            // The reset sequence decrements S three times, so the value the
+            // first instruction sees is $FD on a cold boot.
+            sp: 0x00,
             p: 0x24,
             poll_iflag: true,
             poll_delay: 0,

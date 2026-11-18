@@ -53,10 +53,8 @@ impl Mapper for Mapper7 {
         vec![self.prg_bank]
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-        self.prg_bank = data[0];
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        self.prg_bank = *data.first()?;
+        Some(())
     }
 }

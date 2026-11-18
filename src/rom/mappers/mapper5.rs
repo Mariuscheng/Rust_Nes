@@ -1,15 +1,15 @@
 //! Mapper 5 — MMC5 (partial: linear PRG/CHR banking).
 
-use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
+use crate::state::{Reader, Writer};
 
 pub struct Mapper5 {
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
-    /// MMC5 can have up to 64 KiB of PRG RAM. Fixed capacity with a known size,
-    /// so it lives on the heap: otherwise every Cartridge/MainBus would carry
-    /// 64 KiB inline just because this enum variant exists.
-    prg_ram: Box<[u8; 65536]>,
+    /// MMC5 can have up to 64 KiB of PRG RAM. Always exactly 64 KiB and heap
+    /// boxed: otherwise every Cartridge/MainBus would carry 64 KiB inline just
+    /// because this enum variant exists.
+    prg_ram: Box<[u8]>,
     /// This cartridge has battery-backed PRG RAM.
     battery: bool,
     prg_mode: u8,
@@ -34,10 +34,7 @@ impl Mapper5 {
         Self {
             prg_rom,
             chr_rom,
-            prg_ram: vec![0u8; 65536]
-                .into_boxed_slice()
-                .try_into()
-                .expect("fixed 64 KiB PRG RAM"),
+            prg_ram: vec![0u8; 65536].into_boxed_slice(),
             battery,
             prg_mode: 0,
             chr_mode: 0,
@@ -185,28 +182,24 @@ impl Mapper for Mapper5 {
     }
 
     fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        write_u8_vec(&mut v, self.prg_mode);
-        write_u8_vec(&mut v, self.chr_mode);
-        v.extend_from_slice(&self.prg_banks);
-        v.extend_from_slice(&self.chr_banks);
-        v.extend_from_slice(&self.prg_ram[..]);
-        v
+        let mut out = Writer::new();
+        out.u8(self.prg_mode);
+        out.u8(self.chr_mode);
+        out.bytes(&self.prg_banks);
+        out.bytes(&self.chr_banks);
+        out.bytes(&self.prg_ram);
+        out.finish()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.len() < 19 {
-            return;
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        self.prg_mode = reader.u8()?;
+        self.chr_mode = reader.u8()?;
+        self.prg_banks = reader.array()?;
+        self.chr_banks = reader.array()?;
+        if reader.remaining() >= 65536 {
+            self.prg_ram.copy_from_slice(reader.bytes(65536)?);
         }
-        let mut off = 0;
-        self.prg_mode = read_u8_slice(data, &mut off);
-        self.chr_mode = read_u8_slice(data, &mut off);
-        self.prg_banks.copy_from_slice(&data[off..off + 5]);
-        off += 5;
-        self.chr_banks.copy_from_slice(&data[off..off + 12]);
-        off += 12;
-        if data.len() >= off + 65536 {
-            self.prg_ram.copy_from_slice(&data[off..off + 65536]);
-        }
+        Some(())
     }
 }

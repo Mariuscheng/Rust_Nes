@@ -62,10 +62,22 @@ pub struct PPU {
     pub odd_frame: bool,
     pub mapper_irq: bool,
     /// A12 rising edge count accumulated during the current batch of PPU ticks.
-    /// Incremented each time a genuine A12 0→1 transition is detected.
-    /// Cleared after the caller drains it via tick_mapper_irq() calls.
+    /// Incremented each time the address bus presents a 0→1 transition on A12
+    /// that survives the MMC3 low-pass filter. Cleared after the caller drains
+    /// it via `tick_mapper_irq()` calls.
     pub a12_rising_count: u8,
-    pub(super) prev_a12: bool,
+    /// Current level of address bus bit 12. MMC3-family cartridges clock their
+    /// IRQ counter on its rising edge, so the PPU tracks the real value the bus
+    /// presents each dot instead of guessing from the pattern-table bits.
+    pub a12: bool,
+    /// Consecutive dots A12 has been low. The MMC3 ignores a rising edge until
+    /// A12 has stayed low for three M2 cycles, which is what turns the eight
+    /// per-scanline sprite pattern fetches into a single clock.
+    pub(super) a12_low_dots: u8,
+    /// Accepted A12 edges as (frame, scanline, dot); debug aid for the local
+    /// harness only.
+    #[cfg(all(test, feature = "local_harness"))]
+    pub a12_log: Vec<(u64, u16, u16)>,
     /// True when the VBL flag was set on the most recently processed PPU dot.
     /// A $2002 read on that exact dot returns 0 and suppresses the flag.
     pub(super) vblank_just_set: bool,
@@ -79,7 +91,7 @@ pub struct PPU {
     pub(super) vram_increment: u8,
 
     // ── Frame Buffer (boxed to avoid stack overflow) ──
-    pub frame_buffer: Box<[u32; 256 * 240]>,
+    pub frame_buffer: Box<[u32]>,
 
     // ── Background Rendering State ──
     pub(super) bg_shift_lo: u16,
@@ -106,12 +118,16 @@ pub struct PPU {
     pub(super) sprite_count_render: u8,
 
     // ── OAM Evaluation State Machine ──
-    pub(super) oam_eval_n: u8,
+    /// OAM byte address the evaluator is about to read. It is a `u16` so the
+    /// scan can run off the end of OAM: hardware stops at the last sprite and
+    /// never wraps (blargg `2.Details` test 9).
+    pub(super) oam_eval_addr: u16,
+    /// Sprites found for the next scanline (0..=8).
     pub(super) oam_eval_m: u8,
-    pub(super) oam_eval_byte: u8,
-    pub(super) oam_eval_sprite_buf: [u8; 4],
-    pub(super) oam_eval_reading: bool,
-    pub(super) oam_eval_overflow: bool,
+    /// Byte within the current sprite: 0 = Y, 1 = tile, 2 = attribute, 3 = X.
+    /// Once all eight slots are full a mismatch does *not* reset it, which is
+    /// the hardware bug `4.Obscure` pins down.
+    pub(super) oam_eval_phase: u8,
 
     /// Open bus latch
     open_bus_latch: u8,
@@ -123,6 +139,15 @@ pub struct PPU {
 
 /// ~600ms–1s decay at ~60Hz: 60 frames ≈ 1 second.
 const DECAY_FRAMES: u64 = 55;
+
+/// MMC3 A12 low-pass filter: a rising edge only clocks the IRQ counter once
+/// A12 has been low for three M2 cycles, and one M2 cycle is three PPU dots, so
+/// the threshold is nine dots. That is what collapses the eight sprite pattern
+/// fetches into one clock per scanline: the four-dot gaps inside a fetch phase
+/// never arm the filter, and neither does the eight-dot gap across a scanline
+/// boundary (337-340 plus 1-4), which is why a BG table at $1000 clocks once
+/// per line instead of twice (blargg `4-scanline_timing` test 12).
+const A12_FILTER_DOTS: u8 = 10;
 
 impl PPU {
     pub fn new(mirroring: Mirroring) -> Self {
@@ -160,14 +185,17 @@ impl PPU {
             odd_frame: false,
             mapper_irq: false,
             a12_rising_count: 0,
-            prev_a12: false,
+            a12: false,
+            a12_low_dots: A12_FILTER_DOTS,
+            #[cfg(all(test, feature = "local_harness"))]
+            a12_log: Vec::new(),
             vblank_just_set: false,
             #[cfg(all(test, feature = "local_harness"))]
             split_hit: (0, 0),
             #[cfg(all(test, feature = "local_harness"))]
             row_x: [0; 40],
             vram_increment: 1,
-            frame_buffer: Box::new([0; 256 * 240]),
+            frame_buffer: vec![0u32; 256 * 240].into_boxed_slice(),
             bg_shift_lo: 0,
             bg_shift_hi: 0,
             bg_attr_lo: 0,
@@ -188,15 +216,70 @@ impl PPU {
             spr_x_counter: [0; 8],
             spr_active: [false; 8],
             sprite_count_render: 0,
-            oam_eval_n: 0,
+            oam_eval_addr: 0,
             oam_eval_m: 0,
-            oam_eval_byte: 0,
-            oam_eval_sprite_buf: [0; 4],
-            oam_eval_reading: false,
-            oam_eval_overflow: false,
+            oam_eval_phase: 0,
             open_bus_latch: 0,
             decay_refresh: [0; 8],
         }
+    }
+
+    /// Apply a hardware reset to the PPU.
+    ///
+    /// Reset clears the internal address/scroll latches (`v`, `t`, `x`, `w`),
+    /// the control, mask and status registers and the NMI line, and stops
+    /// rendering in-progress. Video memory — nametables, palette RAM, OAM, CHR
+    /// — and the frame/scanline counters survive: the PPU keeps free-running
+    /// through a reset and a game cannot tell how warm the video memory is.
+    ///
+    /// `$2007` read buffer and open-bus latch are also left alone (hardware
+    /// does not clear them), as is the cartridge's mirroring until the mapper
+    /// re-programs it.
+    pub fn reset(&mut self) {
+        self.v = 0;
+        self.t = 0;
+        self.x = 0;
+        self.w = false;
+        self.scroll_x = 0;
+        self.scroll_y = 0;
+        self.ctrl = PpuControl::default();
+        self.mask = 0;
+        self.status = PpuStatus::default();
+        self.vram_increment = 1;
+        self.oam_addr = 0;
+        self.nmi_interrupt = false;
+        self.nmi_rise = false;
+        self.nmi_line_sampled = false;
+        self.nmi_delay = 0;
+        self.mapper_irq = false;
+        self.a12_rising_count = 0;
+        self.a12_low_dots = A12_FILTER_DOTS;
+        self.vblank_just_set = false;
+
+        // Drop the in-progress rendering pipeline; the next enabled frame
+        // rebuilds it. OAM and secondary OAM keep their bytes.
+        self.rendering_enabled = false;
+        self.bg_shift_lo = 0;
+        self.bg_shift_hi = 0;
+        self.bg_attr_lo = 0;
+        self.bg_attr_hi = 0;
+        self.nt_byte = 0;
+        self.at_byte = 0;
+        self.bg_low_byte = 0;
+        self.bg_high_byte = 0;
+        self.sprite_count_next = 0;
+        self.sprite_zero_next = false;
+        self.sprite_zero_rendering = false;
+        self.spr_shift_lo = [0; 8];
+        self.spr_shift_hi = [0; 8];
+        self.spr_attr = [0; 8];
+        self.spr_x_pos = [0; 8];
+        self.spr_x_counter = [0; 8];
+        self.spr_active = [false; 8];
+        self.sprite_count_render = 0;
+        self.oam_eval_addr = 0;
+        self.oam_eval_m = 0;
+        self.oam_eval_phase = 0;
     }
 
     fn refresh_decay_bits(&mut self, mask: u8, value: u8) {
@@ -225,6 +308,34 @@ impl PPU {
     /// Consume the latched NMI rising edge, if any.
     pub fn take_nmi_rise(&mut self) -> bool {
         std::mem::take(&mut self.nmi_rise)
+    }
+
+    /// Drive address-bus bit 12 for this dot, applying the MMC3 filter.
+    ///
+    /// The counter input is edge triggered, but the cartridge only accepts a
+    /// rising edge after A12 has stayed low for three M2 cycles; without that
+    /// filter every pattern fetch would clock the counter.
+    pub(super) fn drive_a12(&mut self, high: bool) {
+        if high && !self.a12 && self.a12_low_dots >= A12_FILTER_DOTS {
+            self.a12_rising_count = self.a12_rising_count.saturating_add(1);
+            #[cfg(all(test, feature = "local_harness"))]
+            if self.a12_log.len() < 20_000 {
+                self.a12_log.push((self.frame, self.scanline, self.cycle));
+            }
+        }
+        self.a12 = high;
+        if high {
+            self.a12_low_dots = 0;
+        } else {
+            self.a12_low_dots = self.a12_low_dots.saturating_add(1);
+        }
+    }
+
+    /// A dot where the PPU leaves the address bus alone: the level holds, but
+    /// time keeps running so the filter can arm.
+    pub(super) fn hold_a12(&mut self) {
+        let level = self.a12;
+        self.drive_a12(level);
     }
 
     // ── PPU Register I/O ──
@@ -277,13 +388,25 @@ impl PPU {
                 } else {
                     self.t = (self.t & 0xFF00) | (data as u16);
                     self.v = self.t;
+                    // The address bus follows v, so the second write is what can
+                    // toggle A12 for the MMC3 IRQ counter (blargg `3.A12_clocking`
+                    // test 4). The first write only builds t and leaves the bus
+                    // alone.
+                    self.drive_a12((self.v & 0x1000) != 0);
                 }
                 self.w = !self.w;
             }
             7 => {
                 let addr = self.v & 0x3FFF;
+                // A $2007 access puts the current VRAM address on the bus, so
+                // its A12 bit is visible to the cartridge (test 5 and 6).
+                self.drive_a12((addr & 0x1000) != 0);
                 self.internal_write(addr, data);
                 self.v = self.v.wrapping_add(self.vram_increment as u16) & 0x3FFF;
+                // The increment is visible on the bus for the rest of the
+                // access, so a write that carries v across $0FFF still clocks
+                // the MMC3 counter.
+                self.drive_a12((self.v & 0x1000) != 0);
             }
             _ => {}
         }
@@ -315,7 +438,15 @@ impl PPU {
             }
             7 => {
                 let addr = self.v & 0x3FFF;
+                // The read puts `v` on the bus before the automatic increment,
+                // so the cartridge sees that A12 bit (blargg `3.A12_clocking`
+                // test 5).
+                self.drive_a12((addr & 0x1000) != 0);
                 self.v = self.v.wrapping_add(self.vram_increment as u16) & 0x3FFF;
+                // ...and the incremented value for the rest of the access, so a
+                // read that carries v across $0FFF produces the rising edge the
+                // test looks for.
+                self.drive_a12((self.v & 0x1000) != 0);
                 if addr <= 0x3EFF {
                     // $2007 read buffer: always return buffered value, then read new value into buffer.
                     // This applies regardless of rendering state.

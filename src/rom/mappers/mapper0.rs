@@ -69,8 +69,9 @@ impl Mapper for Mapper0 {
         self.wram.to_vec()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
         let len = data.len().min(self.wram.len());
         self.wram[..len].copy_from_slice(&data[..len]);
+        Some(())
     }
 }

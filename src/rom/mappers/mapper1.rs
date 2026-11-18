@@ -1,8 +1,8 @@
 //! Mapper 1 — MMC1.
 
-use super::super::mapper::{read_u8_slice, write_u8_vec};
 use super::Mapper;
 use super::Mirroring;
+use crate::state::{Reader, Writer};
 
 pub struct Mapper1 {
     prg_rom: Vec<u8>,
@@ -169,6 +169,16 @@ impl Mapper for Mapper1 {
         Some(self.mirroring)
     }
 
+    /// MMC1 reset: the shift register and control register are cleared, which
+    /// is why the reset vector is always reachable from the fixed last bank.
+    /// The bank registers keep their values (hardware only resets control).
+    fn reset(&mut self) {
+        self.shift_reg = 0x10;
+        self.shift_count = 0;
+        self.control = 0x0C;
+        self.mirroring = Self::mirroring_from_control(0x0C);
+    }
+
     fn has_chr_ram(&self) -> bool {
         self.chr_rom.is_empty()
     }
@@ -186,31 +196,29 @@ impl Mapper for Mapper1 {
     }
 
     fn save_state(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        write_u8_vec(&mut v, self.shift_reg);
-        write_u8_vec(&mut v, self.shift_count);
-        write_u8_vec(&mut v, self.control);
-        write_u8_vec(&mut v, self.chr_bank0);
-        write_u8_vec(&mut v, self.chr_bank1);
-        write_u8_vec(&mut v, self.prg_bank);
-        v.extend_from_slice(&self.prg_ram);
-        v
+        let mut out = Writer::new();
+        out.u8(self.shift_reg);
+        out.u8(self.shift_count);
+        out.u8(self.control);
+        out.u8(self.chr_bank0);
+        out.u8(self.chr_bank1);
+        out.u8(self.prg_bank);
+        out.bytes(&self.prg_ram);
+        out.finish()
     }
 
-    fn load_state(&mut self, data: &[u8]) {
-        if data.len() < 6 {
-            return;
-        }
-        let mut off = 0;
-        self.shift_reg = read_u8_slice(data, &mut off);
-        self.shift_count = read_u8_slice(data, &mut off);
-        self.control = read_u8_slice(data, &mut off);
+    fn load_state(&mut self, data: &[u8]) -> Option<()> {
+        let mut reader = Reader::new(data);
+        self.shift_reg = reader.u8()?;
+        self.shift_count = reader.u8()?;
+        self.control = reader.u8()?;
         self.mirroring = Self::mirroring_from_control(self.control);
-        self.chr_bank0 = read_u8_slice(data, &mut off);
-        self.chr_bank1 = read_u8_slice(data, &mut off);
-        self.prg_bank = read_u8_slice(data, &mut off);
-        if data.len() >= off + 8192 {
-            self.prg_ram.copy_from_slice(&data[off..off + 8192]);
+        self.chr_bank0 = reader.u8()?;
+        self.chr_bank1 = reader.u8()?;
+        self.prg_bank = reader.u8()?;
+        if reader.remaining() >= 8192 {
+            self.prg_ram.copy_from_slice(reader.bytes(8192)?);
         }
+        Some(())
     }
 }

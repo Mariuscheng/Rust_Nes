@@ -35,8 +35,13 @@ NesConsole::step()
 │   └─ 剩餘的內部 cycle 用 bus.tick() 補齊
 ├─ OAM DMA（$4014 先排隊，指令結束後執行 513/514 cycles）
 ├─ 中斷派送（NMI 邊緣優先，其次 IRQ）
-└─ DMC DMA 造成的 4-cycle stall（在指令或中斷序列之後支付）
+└─ DMC DMA 的 4-cycle stall（累積在 stolen cycles，在指令或中斷序列之後支付）
 ```
+
+DMC DMA 本身在下一個 **讀取** 週期發生：`MainBus::read` 先 tick，若 APU 已經要求
+sample byte，就重複該次讀取（1 或 2 次，依 cycle 奇偶）再抓 sample。重複的讀取有
+完整副作用，所以 `$2007` 會多推進位址、`$4016` 會多移一位——這正是
+`read_joy3` 與 `dmc_dma_during_read4` 在測的行為。
 
 `CPU::step` 是 **instruction-stepped**：handler 的 bus 存取順序就是硬體 cycle
 順序，宣告的 cycle 數與實際存取數的差額用「no bus access 的 cycle」補齊。這個模型
@@ -57,6 +62,14 @@ MainBus::tick_with_dots(3)
 
 PPU 是唯一以 dot 為單位的元件；CPU/APU 都以 3 dots 為一步。**不要**在 PPU 以外
 的地方假設 dot 級時間。
+
+同一個 tick 也把 scanline counter 的時鐘來源交給卡匣：PPU 每個 dot 依實際 fetch 排程更新位址匯流排的
+A12（BG pattern fetch 用 `$2000` bit 4、sprite pattern fetch 用 bit 3，NT/attribute
+讀取為 0），CPU 的 `$2006`/`$2007` 存取則把 `v` 放到匯流排上；PPU 再套用三次 M2
+cycle（9 dots）的低通濾波，把「每條 scanline 八次 sprite pattern fetch」收斂成一次
+clock。`MainBus` 每個 CPU cycle 把累積的上升緣交給 `Mapper::tick_mapper_irq`，MMC3
+以 revision B 的語意計數並把 IRQ 線閂住到 `$E000`/`$E001` 應答
+（blargg `mmc3_irq_tests`、`mmc3_test`）。
 
 ### 2.3 中斷模型
 
@@ -89,6 +102,93 @@ Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
 `NesConsole::save_battery()` 寫回同名檔案。mapper 不需要知道檔案路徑，也不各自
 處理存檔格式。
 
+### 2.5 Reset 與暖開機
+
+`NesConsole::reset()` 模擬的是硬體 `/RESET` 腳位，不是「重新載入 ROM」：
+
+- **CPU**：`CPU::reset` 是完整的 7-cycle 序列——2 個 dummy read（PC、PC+1）、3 個
+  堆疊位址的 *read*（`$0100|S`、`|S-1`、`|S-2`，只讀不寫）、S 減 3、設 I，最後從
+  `$FFFC`/`$FFFD` 取 vector。A/X/Y、十進位旗標與堆疊內容都保留，遊戲因此能分辨冷
+  開機與暖開機（`cpu_reset/registers` 期望 reset 後 A=$34 X=$56 Y=$78 P=$FF S=$0F）。
+- **PPU**：`PPU::reset` 清 `ctrl`/`mask`/`status`/`v`/`t`/`x`/`w`/`oam_addr` 與 NMI
+  線；VRAM、調色盤、OAM、CHR 與 frame/scanline 計數器不動（PPU 沒有被重啟，只被
+  停止渲染）。
+- **APU**：`APU::reset` 等於寫 `$4015`=`$00`——關閉所有通道、清 length counter、清
+  frame/DMC IRQ；只寫暫存器（duty/period/halt/sweep/DMC 位址）保留，所以 halt 旗標
+  還在的 triangle 會繼續發聲（`apu_reset` 的測試重點）。frame counter 由
+  `APU::rearm_frame_counter` 在 reset 序列之後重播最後一次 `$4017` 值，並預跑 9 個
+  cycle，和 power-up 一致（`apu_reset/4017_timing`）。
+- **Mapper**：`Mapper::reset` 預設 no-op；只有 MMC1（shift register + control=$0C）
+  與 MMC3（bank/IRQ 暫存器）覆寫。MMC1 的 control 決定 reset vector 落在哪個 bank，
+  MMC3 的 IRQ 必須在遊戲重新初始化前關掉。
+- **保留**：2 KB 工作 RAM、PRG RAM（含電池存檔）、VRAM/調色盤/OAM、已排入的音訊
+  sample。重置不重讀 `.sav`，也不清 `last_ppu_frame` 以外的 frame 基準。
+
+harness 端：ROM 在 `$6000` 寫 `0x81` 表示「請按 reset」，`run_until_result` 等 12 個
+frame（>100 ms）後呼叫 `NesConsole::reset()`；reset 後 30 個 frame 內忽略殘留的
+`$81`，避免同一次請求被按兩次。
+
+### 2.6 平台層的畫面節奏（`main.rs`）
+
+NES 的 frame 不是 60 Hz：89342 PPU dots ÷ 3 = 29780.67 CPU cycles，在 1.7897725 MHz
+下是 16.639 ms（60.0988 Hz）。主迴圈一次 `step_frame()` 就是一個 NES frame，所以必須
+自己限速：
+
+- **音訊是時鐘**：`Sink::len()` 是「已排入的 per-frame 音訊 buffer 數」，目標 3 個
+  （約 33 ms 緩衝＋正在播的那個）。每 frame 依佇列深度把 frame 週期加減 40 µs
+  （±0.24 %，夾在 16.2–17.1 ms），吸收音訊裝置實際取樣率與 44100 Hz 的誤差。這
+  不會改變遊戲速度，只有裝置時鐘差多少就補多少。
+- **不要用音訊阻塞限速**：舊版 `AudioOut::append` 是 `while sink.len() > 2 { sleep(1ms) }`。
+  `Sleep(1)` 在 Windows 是 ~1–16 ms 的粗粒度，而 `len` 只會在整個 16.6 ms buffer
+  播完時才掉一格，所以 frame 間隔變成 19–22 ms 與 2 ms 交錯（實測 p50 = 19.4 ms）。
+  現在 `append` 永不睡；佇列超過 6 個 buffer 才丟掉該 frame 的樣本（緊急閥）。
+- **等待方式**：`wait_until()` 先 `sleep(remain - 2ms)` 再 spin 最後 2 ms；Windows 上
+  另外呼叫 `timeBeginPeriod(1)`（`winmm`）把 timer 粒度降到 1 ms。純 sleep 的誤差
+  （~0.9–1.7 ms）比可見的抖動還大。
+- **落後就重同步**：若 `next_frame` 已經過期（拖視窗、斷點），不要把 deadline 往前
+  追（會連播好幾格），直接重設成 `now + 1 ms`。
+- 量測（Mario，20 秒）：p50 = 16.62 ms、p99 = 18.44 ms、最大 20.45 ms，音訊佇列
+  穩定在 2–4 個 buffer，CPU 約 29 % 單核。修正前 p50 = 19.41 ms、p90 = 21.09 ms，
+  且每幾格就出現 1.9 ms 的暴衝。
+- minifb 0.24 沒有 vsync，present 只是 `InvalidateRect` + message loop；60.0 Hz 螢幕
+  與 60.0988 Hz 的差異會讓 DWM 每 ~10 秒重複一格，這是更新率差，不是節奏 bug。
+
+### 2.7 存檔格式（save state）
+
+存檔是單一 binary blob，欄位全部經過 `src/state.rs` 的 `Writer`/`Reader`：呼叫端只
+讀寫欄位，越界由 `Option` 回報——截斷的檔案不會 panic，也不會留下「載入一半」的狀態。
+
+| 區段 | 內容 |
+|------|------|
+| `version`（1 byte） | 目前 `0x04` |
+| CPU | `a, x, y, pc, sp, p` |
+| PPU | `v/t/x/w`、`scanline/cycle/frame`、`odd_frame`、`read_buffer`、`oam_addr`、OAM 256 B、VRAM 2 KB、palette 32 B、CHR 8 KB |
+| PPU 暫存器 | `ctrl, status, mask`（`0x04` 起） |
+| RAM | 2 KB（`bus.rs::ram_data`） |
+| mapper | `u32` 長度 + 各 mapper 的 payload |
+| APU | `u32` 長度 + payload（109 bytes） |
+
+版本歷史與相容處理：
+
+| 版本 | 差異 | 載入行為 |
+|------|------|----------|
+| `0x01` | 只有 CPU + PPU | 讀完 PPU 就返回 |
+| `0x02` | 多了 RAM 與 8192 bytes 已廢棄的 WRAM | `reader.skip(8192)` 跳過 |
+| `0x03` | 移除廢棄 WRAM，加入 mapper / APU 區段 | 正常 |
+| `0x04` | PPU 區段尾端加入 `ctrl/status/mask` | `version < 0x04` 不覆寫暫存器 |
+
+`0x04` 不是可有可無的欄位：存檔不含 `PPUMASK` 時，重開模擬器再按 F7 會得到整幀
+全黑——渲染從頭就是關的，要等遊戲自己重寫 `$2001` 才恢復。這個 bug 只有把狀態載入
+**全新開機**的主機才測得出來；載回原本那台會通過，因為暫存器還在。
+
+改格式的四條規矩：
+
+1. 欄位順序或長度一改就 bump 版本，並保留舊版載入分支；舊存檔必須還能讀。
+2. 同步更新 `state_tests::state_format_is_pinned` 的 (長度, FNV-1a)。它是唯一擋住
+   「writer 與 reader 一起改歪」的檢查——往返測試對稱，但可能已經不是同一個格式。
+3. mapper payload 沒有自己的版本號，動它就等於動外層格式。
+4. 新欄位若只寫不讀，`save_load_save_is_byte_identical` 會立刻失敗。
+
 ## 3. Rust 寫作慣例
 
 ### 3.1 模組與可見性
@@ -97,12 +197,15 @@ Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
   ——`testing/mod.rs` 是本機測試的例外。
 - 預設私有；只有跨模組需要的東西才 `pub`。crate 內共用優先用 `pub(crate)` 或
   `pub(super)`。
-- `src/` **不含測試**。測試全部在 `testing/`：`src/main.rs` 用
+- 測試預設放 `testing/`：`src/main.rs` 用
   `#[cfg(all(test, feature = "local_harness"))] #[path = "../testing/mod.rs"] mod tests;`
   掛入 frame / interrupt-poll / schedule 測試；`src/nes.rs` 另外用 `#[path]` 掛
   `rom_tests.rs`，因為 ROM 回歸需要直接讀 `NesConsole` 的私有 bus 狀態（`$6000`
   PRG RAM、PPU OAM）。這樣產品 API 不需要任何測試專用 accessor。各模組再用同樣的
   `#[path]` 掛自己的 `*_tests.rs`，因此仍能存取私有欄位。
+- 例外：**只用公開 API 的測試放 `src/state_tests.rs`**（`#[cfg(test)] mod state_tests;`）。
+  `testing/` 是 gitignored，GitHub checkout 沒有它；這幾個測試是 CI 唯一會執行的
+  行為驗證（存檔 round-trip、格式 pin、九個 mapper）。
 - 平台 I/O 只允許出現在 `main.rs` 與 `audio.rs`；`nes.rs` 以下不碰視窗、鍵盤、
   音效裝置或檔案對話框。
 - 只給 harness 用的診斷資料（例如 PPU 的 `split_hit`、`row_x`）用
@@ -191,20 +294,31 @@ Battery save 由 `Cartridge` 統一管理：mapper 只透過 `battery_ram()` /
 | 層級 | 位置 | 說明 |
 |------|------|------|
 | 單元測試 | `testing/<module>_tests.rs` | 測私有邏輯：decoder、mapper、APU tick、中斷 poll、schedule table。 |
-| ROM 回歸 | `testing/rom_tests.rs` | 每個 blargg 子測項一個 `#[test]`，assert pass/status；需要 `nes-test-roms-master/`。 |
+| 公開 API | `src/state_tests.rs` | 存檔 round-trip、格式 pin、九個 mapper 的對稱性。不依賴 harness，CI 會跑。 |
+| ROM 回歸 | `testing/rom_tests.rs` | 每個 blargg 子測項一個 `#[test]`，assert pass/status；路徑一律指向 `nes-test-roms-master/`，**缺檔視為失敗**（早期的「找不到就跳過」讓 15 個測試空跑了好幾個月）。 |
 | 畫面回歸 | `testing/frame_tests.rs` | 對 `golden_frames.txt` 比 FNV-1a hash，抓渲染回歸。 |
 
 ```bash
-cargo test --release --features local_harness                    # 36 個單元測試
-cargo test --release --features local_harness -- --ignored      # 45 個 ROM/golden
+cargo test --release --features local_harness                    # 55 個測試（51 harness + 4 公開 API）
+cargo test --release --features local_harness -- --ignored      # 63 個測試，實際開機 134 片 ROM
 ```
 
 修 bug 的順序永遠是：**先讓測試失敗 → 最小修正 → 全 suite + golden 綠**。`testing/`
-是本機私有（不發布），所以 clone 下來的 repo `cargo test` 會是 0 tests。
+是本機私有（不發布），所以 clone 下來的 repo `cargo test` 只剩 `src/state_tests.rs`
+那 4 個測試——它們同時也是 CI 的全部行為驗證。
 
 ## 6. 名詞與時間單位
 
 - 1 CPU cycle = 3 PPU dots；1 frame = 89342 PPU dots（odd frame 少 1 dot）。
 - 1 scanline = 341 dots；visible 240 lines + post-render 1 + vblank 20 + pre-render 1。
 - Frame counter（4-step）：約 29830–29832 CPU cycles，依寫入 `$4017` 的奇偶 cycle 而異。
+- Power-up 時 frame counter 先預跑 9 個 cycle，等效於第一個 instruction 前 9–12 個
+  cycle 寫入 `$4017`=`$00`（`APU::power_on`，blargg `09.reset_timing`）。
+- Reset 時 frame counter 重播最後一次寫入 `$4017` 的值，同樣預跑 9 個 cycle；
+  `apu_reset/4017_timing` 量到的延遲是 9（該測試接受 6–12）。
+- CPU reset 固定 7 個 cycle（2 dummy read + 3 stack read + 2 vector read），
+  `cpu_reset/registers` 檢查 S 減 3、I 設起、堆疊內容不變。
+- 寫入 `$4017` 後第一個序列的 half-frame clock 落在 14915/29831/37283（`+2` shift）。
+  同一個 cycle 的 `$4015` 讀取要看 clock 前的長度計數；同一個 cycle 的長度 reload
+  在計數器非 0 時要被忽略（`length_before_clock`，blargg `10`/`11`）。
 - DMC bit rate 表在 `apu/constants.rs`；sample fetch stall 固定 4 cycles。
